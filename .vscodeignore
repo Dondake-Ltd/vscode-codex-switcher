@@ -4,6 +4,10 @@
 src/**
 **/*.ts
 **/*.map
+*.zip
+*.vsix
+tmp_vsix_*/
+tmp_vsix_*
 node_modules/**
 .git/**
 out/test/**

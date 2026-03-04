@@ -17,9 +17,13 @@ import {
 const EXT_NS = 'codexAccountSwitcher';
 const CMD_SWITCH = 'codexAccountSwitcher.switchAccount';
 const CMD_ADD = 'codexAccountSwitcher.addAccount';
+const CMD_DELETE = 'codexAccountSwitcher.deleteAccount';
 const CMD_EDIT = 'codexAccountSwitcher.editAccounts';
 const CMD_RELOAD = 'codexAccountSwitcher.reloadWindow';
 const CMD_EXPORT = 'codexAccountSwitcher.exportActiveAuth';
+const STATUS_SIDE_SETTING = 'statusBarSide';
+const RELOAD_TARGET_SETTING = 'reloadTarget';
+const CMD_RESTART_EXTENSION_HOST = 'workbench.action.restartExtensionHost';
 
 let statusBar: vscode.StatusBarItem;
 let output: vscode.OutputChannel;
@@ -28,12 +32,12 @@ export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Codex Account Switcher');
   context.subscriptions.push(output);
 
-  statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 1000);
-  statusBar.command = CMD_SWITCH;
-  context.subscriptions.push(statusBar);
+  createStatusBarItem();
+  context.subscriptions.push({ dispose: () => statusBar.dispose() });
 
   context.subscriptions.push(vscode.commands.registerCommand(CMD_SWITCH, () => switchAccountViaPicker(context)));
   context.subscriptions.push(vscode.commands.registerCommand(CMD_ADD, () => addAccount()));
+  context.subscriptions.push(vscode.commands.registerCommand(CMD_DELETE, () => deleteAccount()));
   context.subscriptions.push(vscode.commands.registerCommand(CMD_EDIT, () => editAccounts()));
   context.subscriptions.push(
     vscode.commands.registerCommand(CMD_RELOAD, () => vscode.commands.executeCommand('workbench.action.reloadWindow'))
@@ -42,6 +46,9 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration(EXT_NS)) {
+      if (e.affectsConfiguration(`${EXT_NS}.${STATUS_SIDE_SETTING}`)) {
+        recreateStatusBarItem();
+      }
       void refreshStatusBar();
     }
   }));
@@ -51,6 +58,21 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {}
+
+function getStatusBarAlignment(): vscode.StatusBarAlignment {
+  const side = getConfig().get<string>(STATUS_SIDE_SETTING, 'right').toLowerCase();
+  return side === 'left' ? vscode.StatusBarAlignment.Left : vscode.StatusBarAlignment.Right;
+}
+
+function createStatusBarItem(): void {
+  statusBar = vscode.window.createStatusBarItem(getStatusBarAlignment(), 1000);
+  statusBar.command = CMD_SWITCH;
+}
+
+function recreateStatusBarItem(): void {
+  statusBar.dispose();
+  createStatusBarItem();
+}
 
 function getConfig(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration(EXT_NS);
@@ -134,10 +156,10 @@ async function refreshStatusBar(): Promise<void> {
   const activeExists = enabledAccounts.some((a) => a.name === active);
 
   if (activeExists) {
-    statusBar.text = `Codex: ${active}`;
+    statusBar.text = `$(account) ${active}`;
     statusBar.tooltip = 'Switch Codex account';
   } else {
-    statusBar.text = 'Codex: Setup';
+    statusBar.text = '$(tools) Setup';
     statusBar.tooltip = 'Configure Codex account snapshots';
   }
 
@@ -186,14 +208,14 @@ async function runSetupWizard(context: vscode.ExtensionContext, reason?: string)
       value: 'add'
     },
     {
-      label: 'Open settings',
-      description: 'Open Codex Account Switcher settings.',
-      value: 'settings'
+      label: '$(trash) Delete account',
+      description: 'Remove an account entry from settings.',
+      value: 'delete'
     },
     {
-      label: 'Reload window',
-      description: 'Run workbench.action.reloadWindow.',
-      value: 'reload'
+      label: '$(gear) Open settings',
+      description: 'Open Codex Account Switcher settings.',
+      value: 'settings'
     }
   ];
 
@@ -210,13 +232,14 @@ async function runSetupWizard(context: vscode.ExtensionContext, reason?: string)
     return;
   }
 
-  if (selected.value === 'settings') {
-    await editAccounts();
+  if (selected.value === 'delete') {
+    await deleteAccount();
     return;
   }
 
-  if (selected.value === 'reload') {
-    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  if (selected.value === 'settings') {
+    await editAccounts();
+    return;
   }
 }
 
@@ -230,9 +253,10 @@ async function switchAccountViaPicker(context: vscode.ExtensionContext): Promise
   }
 
   const picks: vscode.QuickPickItem[] = enabledAccounts.map((a) => ({ label: a.name }));
-  picks.push({ label: 'Add account...', detail: 'Create a new account snapshot entry.' });
-  picks.push({ label: 'Open settings', detail: 'Edit Codex Account Switcher settings.' });
-  picks.push({ label: 'Reload window', detail: 'Run workbench.action.reloadWindow.' });
+  picks.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
+  picks.push({ label: '$(add) Add account...', detail: 'Create a new account snapshot entry.' });
+  picks.push({ label: '$(trash) Delete account...', detail: 'Remove an account snapshot entry.' });
+  picks.push({ label: '$(gear) Open settings', detail: 'Edit Codex Account Switcher settings.' });
 
   const chosen = await vscode.window.showQuickPick(picks, {
     placeHolder: 'Select a Codex account or action'
@@ -242,18 +266,18 @@ async function switchAccountViaPicker(context: vscode.ExtensionContext): Promise
     return;
   }
 
-  if (chosen.label === 'Add account...') {
+  if (chosen.label === '$(add) Add account...') {
     await addAccount();
     return;
   }
 
-  if (chosen.label === 'Open settings') {
-    await editAccounts();
+  if (chosen.label === '$(trash) Delete account...') {
+    await deleteAccount();
     return;
   }
 
-  if (chosen.label === 'Reload window') {
-    await vscode.commands.executeCommand('workbench.action.reloadWindow');
+  if (chosen.label === '$(gear) Open settings') {
+    await editAccounts();
     return;
   }
 
@@ -349,10 +373,63 @@ async function switchTo(accountName: string, context: vscode.ExtensionContext): 
   await config.update('activeAccount', accountName, vscode.ConfigurationTarget.Global);
   await refreshStatusBar();
 
-  void vscode.window.showInformationMessage(`Switched Codex account to: ${accountName}. Reloading window...`);
   output.appendLine(`Switched active account to '${accountName}'`);
+  await maybeReloadAfterSwitch(accountName);
+}
 
-  await vscode.commands.executeCommand('workbench.action.reloadWindow');
+function hasDirtyEditors(): boolean {
+  return vscode.workspace.textDocuments.some((doc) => doc.isDirty);
+}
+
+async function maybeReloadAfterSwitch(accountName: string): Promise<void> {
+  const config = getConfig();
+  const reloadTarget = config.get<string>(RELOAD_TARGET_SETTING, 'extensionHost');
+
+  const triggerReload = (): void => {
+    // Fire asynchronously so reload/restart does not bubble a command-cancel error toast.
+    setTimeout(() => {
+      if (reloadTarget === 'extensionHost') {
+        void vscode.commands.executeCommand(CMD_RESTART_EXTENSION_HOST);
+        return;
+      }
+      void vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }, 25);
+  };
+
+  const reloadAction = async (): Promise<void> => {
+    if (reloadTarget === 'extensionHost') {
+      try {
+        triggerReload();
+        return;
+      } catch {
+        output.appendLine('Restart Extension Host failed; falling back to full window reload.');
+      }
+    }
+    setTimeout(() => {
+      void vscode.commands.executeCommand('workbench.action.reloadWindow');
+    }, 25);
+  }
+
+  const dirty = hasDirtyEditors();
+  if (dirty) {
+    const choice = await vscode.window.showWarningMessage(
+      `Switched Codex account to: ${accountName}. You have unsaved editors. Reload now?`,
+      { modal: true },
+      'Reload now',
+      'Cancel'
+    );
+    if (choice === 'Reload now') {
+      await reloadAction();
+    } else {
+      void vscode.window.showInformationMessage(
+        `Switched Codex account to: ${accountName}. Reload when ready to apply auth to running tools.`
+      );
+    }
+    return;
+  }
+
+  void vscode.window.showInformationMessage(`Switched Codex account to: ${accountName}. Reloading...`);
+  await reloadAction();
 }
 
 async function addAccount(): Promise<void> {
@@ -435,6 +512,43 @@ async function addAccount(): Promise<void> {
 
   await refreshStatusBar();
   void vscode.window.showInformationMessage(`Added Codex account '${name}'.`);
+}
+
+async function deleteAccount(): Promise<void> {
+  const accounts = getAccounts();
+  if (accounts.length === 0) {
+    void vscode.window.showInformationMessage('No accounts configured.');
+    return;
+  }
+
+  const pick = await vscode.window.showQuickPick(
+    accounts.map((a) => ({ label: a.name, description: a.enabled === false ? 'disabled' : undefined })),
+    { placeHolder: 'Select account to delete' }
+  );
+  if (!pick) {
+    return;
+  }
+
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete account '${pick.label}' from settings?`,
+    { modal: true },
+    'Delete'
+  );
+  if (confirm !== 'Delete') {
+    return;
+  }
+
+  const nextAccounts = accounts.filter((a) => a.name !== pick.label);
+  await getConfig().update('accounts', nextAccounts, vscode.ConfigurationTarget.Global);
+
+  const active = getConfig().get<string>('activeAccount', '').trim();
+  if (active === pick.label) {
+    const nextActive = getEnabledAccounts(nextAccounts)[0]?.name ?? '';
+    await getConfig().update('activeAccount', nextActive, vscode.ConfigurationTarget.Global);
+  }
+
+  await refreshStatusBar();
+  void vscode.window.showInformationMessage(`Deleted Codex account '${pick.label}'.`);
 }
 
 async function editAccounts(): Promise<void> {

@@ -2,7 +2,7 @@
   "name": "vscode-codex-switcher",
   "displayName": "Codex Account Switcher",
   "description": "Tired of logging in and out of your Codex accounts when you run out of usage or when swapping between work and personal? This extension saves the day by adding a dropdown to the status bar letting you switch between named Codex auth snapshots and triggering a quick window reload of VS Code.",
-  "version": "0.1.6",
+  "version": "0.1.4",
   "publisher": "DondakeLtd",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -118,6 +118,11 @@
           "type": "boolean",
           "default": false,
           "description": "Warn that account swapping requires file-based Codex credentials."
+        },
+        "codexAccountSwitcher.promptBeforeReload": {
+          "type": "boolean",
+          "default": true,
+          "description": "Prompt before reloading after account switch (recommended when you may have unsaved editors)."
         },
         "codexAccountSwitcher.reloadTarget": {
           "type": "string",

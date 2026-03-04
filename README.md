@@ -1,44 +1,78 @@
-# Codex Account Switcher (VS Code)
++----------------------+
+| Codex Account Switch |
++----------------------+
 
-Switch between named local Codex auth snapshots from the status bar and reload the current window so Codex integrations pick up the new credentials.
+# Codex Account Switcher
 
-## What it does
+You know the ritual:
 
-- Adds a right-side status bar dropdown:
-  - `Codex: <ActiveAccount>` when configured
-  - `Codex: Setup` when not configured
-- Lets you pick an account or actions:
-  - account names
-  - `Add account...`
-  - `Open settings`
-  - `Reload window`
-- On switch:
+1. "Oops, wrong account."
+2. Logout.
+3. Login.
+4. Reload.
+5. Lose your flow.
+6. Mutter things unfit for documentation.
+
+This extension exists because that loop is cursed.
+
+Now you click one status bar item, pick your account, and keep coding like the main character.
+
+## Demo
+
+Observe the cursed loop being defeated:
+
+![Codex Account Switcher demo](assets/codex-account-switcher.gif)
+
+## The Vibe
+
+- Before: account-switching side quest every time usage limits, context, or account boundaries get in your way.
+- After: one click, one switch, one restart/reload path, back to shipping.
+- This is not just a QoL tweak. This is anti-friction technology.
+
+## What It Actually Does
+
+- Adds a status bar switcher:
+  - `$(account) <ActiveAccount>` when configured
+  - `$(tools) Setup` when not configured
+- Lets you:
+  - switch accounts
+  - add account snapshots
+  - delete account entries
+  - open settings fast
+- On switch, it:
   - validates snapshot JSON
-  - optionally backs up current `auth.json`
-  - replaces active `auth.json` using a temp-file swap
+  - optionally backs up active `auth.json`
+  - swaps snapshot -> active `auth.json`
   - updates `activeAccount`
-  - runs `Reload Window`
-- Includes a setup wizard when no accounts are configured or `codexHome` is missing.
+  - restarts extension host (default) or reloads window
 
-## Why reload is needed
+## Why Restart/Reload Is Needed
 
-Codex extension/CLI auth state is read by running processes. Reloading the VS Code window ensures those processes pick up the newly swapped `auth.json`.
+Because running tools cache auth state. Swapping files alone does not force live processes to re-read credentials.
 
-## Configuration
+Default behavior uses extension host restart (`reloadTarget = extensionHost`) because it is usually less disruptive than full window reload.
 
-Settings live under `codexAccountSwitcher.*`:
+## Commands
+
+- `codexAccountSwitcher.switchAccount`
+- `codexAccountSwitcher.addAccount`
+- `codexAccountSwitcher.deleteAccount`
+- `codexAccountSwitcher.editAccounts`
+- `codexAccountSwitcher.reloadWindow`
+- `codexAccountSwitcher.exportActiveAuth`
+
+## Settings
+
+Everything lives under `codexAccountSwitcher.*`.
 
 - `codexHome` (string, default `""`)
-  - If empty, resolution order is:
-    1. `CODEX_HOME` env var
-    2. platform home default (`~/.codex` on macOS/Linux, `%USERPROFILE%\\.codex` on Windows)
-- `accounts` (array)
-  - each item: `{ "name": string, "authFile": string, "enabled": boolean }`
-  - `authFile` supports `${codexHome}`
+- `accounts` (array of `{ name, authFile, enabled }`)
 - `activeAccount` (string)
 - `confirmBeforeSwitch` (boolean, default `false`)
 - `backupActiveAuth` (boolean, default `true`)
 - `ensureFileBasedCreds` (boolean, default `false`)
+- `reloadTarget` (`"extensionHost" | "window"`, default `"extensionHost"`)
+- `statusBarSide` (`"right" | "left"`, default `"right"`)
 
 Example:
 
@@ -56,56 +90,43 @@ Example:
       "enabled": true
     }
   ],
-  "codexAccountSwitcher.activeAccount": "Personal"
+  "codexAccountSwitcher.activeAccount": "Personal",
+  "codexAccountSwitcher.reloadTarget": "extensionHost"
 }
 ```
 
-## Commands
+## Setup (Fast)
 
-- `codexAccountSwitcher.switchAccount`
-- `codexAccountSwitcher.addAccount`
-- `codexAccountSwitcher.editAccounts`
-- `codexAccountSwitcher.reloadWindow`
-- `codexAccountSwitcher.exportActiveAuth`
+If status bar shows setup mode:
 
-## Add account wizard
+1. click status bar item
+2. create/check `codexHome`
+3. add account snapshot
+4. switch like a legend
 
-`Codex Account Switcher: Add Account` asks for:
+## Security (Not Optional)
 
-1. account name
-2. creation method:
-   - snapshot current `auth.json`
-   - select existing snapshot file
+`~/.codex/auth.json` and account snapshot files contain sensitive tokens.
 
-Then it writes the account entry to settings.
+- treat them like passwords
+- do not commit them
+- do not share them
+- extension does not log token contents
 
-## Setup wizard
+## Power User Notes
 
-When status bar shows `Codex: Setup` (or when switching fails due to missing `codexHome`), the wizard can:
-
-1. create the `codexHome` folder
-2. add an account snapshot
-3. open extension settings
-4. reload the window
-
-## Security warning
-
-`~/.codex/auth.json` and snapshot files contain sensitive access tokens.
-
-- Treat these files like passwords.
-- Never commit them to git.
-- This extension never logs auth file contents.
-
-## Notes on file-based credentials
-
-This extension swaps files. If Codex is using OS keychain-backed credentials, file swapping may not affect active auth. Enable `ensureFileBasedCreds` to show a warning in the UI.
+- Yes, snapshots can carry account-specific Codex behavior/preferences.
+- Yes, that means switching back can restore that account's usual "mode".
+- If Codex uses OS keychain auth instead of file-based auth, file swapping may not behave as expected.
 
 ## Development
 
-- `npm run compile` builds the extension
-- `npm test` runs unit tests
-- `npm run test:integration` runs VS Code extension-host integration tests
-- `npm run test:all` runs both unit and integration tests
-- `npm run package` builds a `.vsix`
+- `npm run compile`
+- `npm test`
+- `npm run test:integration`
+- `npm run package`
 
-Detailed manual release validation steps are in `TESTING.md`.
+Manual release checklist is in `TESTING.md`.
+
+From "why is this still manual" to "best thing since sliced bread".
+Next stop: Mars operations, probably.
