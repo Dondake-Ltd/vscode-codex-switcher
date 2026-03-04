@@ -1,0 +1,147 @@
+{
+  "name": "vscode-codex-switcher",
+  "displayName": "Codex Account Switcher",
+  "description": "Tired of logging in and out of your Codex accounts when you run out of usage or when swapping between work and personal? This extension saves the day by adding a dropdown to the status bar letting you switch between named Codex auth snapshots and triggering a quick window reload of VS Code.",
+  "version": "0.1.1",
+  "publisher": "DondakeLtd",
+  "license": "MIT",
+  "icon": "assets/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Dondake-Ltd/vscode-codex-switcher.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Dondake-Ltd/vscode-codex-switcher/issues"
+  },
+  "homepage": "https://github.com/Dondake-Ltd/vscode-codex-switcher#readme",
+  "keywords": [
+    "codex",
+    "openai",
+    "account",
+    "auth",
+    "switcher"
+  ],
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:codexAccountSwitcher.switchAccount",
+    "onCommand:codexAccountSwitcher.addAccount",
+    "onCommand:codexAccountSwitcher.editAccounts",
+    "onCommand:codexAccountSwitcher.reloadWindow",
+    "onCommand:codexAccountSwitcher.exportActiveAuth"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "codexAccountSwitcher.switchAccount",
+        "title": "Codex Account Switcher: Switch Account"
+      },
+      {
+        "command": "codexAccountSwitcher.addAccount",
+        "title": "Codex Account Switcher: Add Account"
+      },
+      {
+        "command": "codexAccountSwitcher.editAccounts",
+        "title": "Codex Account Switcher: Edit Accounts"
+      },
+      {
+        "command": "codexAccountSwitcher.reloadWindow",
+        "title": "Codex Account Switcher: Reload Window"
+      },
+      {
+        "command": "codexAccountSwitcher.exportActiveAuth",
+        "title": "Codex Account Switcher: Export Active Auth"
+      }
+    ],
+    "configuration": {
+      "title": "Codex Account Switcher",
+      "properties": {
+        "codexAccountSwitcher.codexHome": {
+          "type": "string",
+          "default": "",
+          "description": "Codex home directory. If empty, uses CODEX_HOME or defaults to ~/.codex."
+        },
+        "codexAccountSwitcher.accounts": {
+          "type": "array",
+          "default": [],
+          "description": "Named account snapshots.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Unique account name."
+              },
+              "authFile": {
+                "type": "string",
+                "description": "Path to account snapshot auth file. Supports ${codexHome}."
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "Whether this account can be selected."
+              }
+            },
+            "required": [
+              "name",
+              "authFile"
+            ]
+          }
+        },
+        "codexAccountSwitcher.activeAccount": {
+          "type": "string",
+          "default": "",
+          "description": "Currently active account name."
+        },
+        "codexAccountSwitcher.confirmBeforeSwitch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Ask for confirmation before switching account."
+        },
+        "codexAccountSwitcher.backupActiveAuth": {
+          "type": "boolean",
+          "default": true,
+          "description": "Backup active auth.json before switch."
+        },
+        "codexAccountSwitcher.ensureFileBasedCreds": {
+          "type": "boolean",
+          "default": false,
+          "description": "Warn that account swapping requires file-based Codex credentials."
+        }
+      }
+    },
+    "menus": {
+      "statusBar/item/context": [
+        {
+          "command": "codexAccountSwitcher.switchAccount",
+          "when": "true",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test:unit": "npm run compile && node --test out/test/core.test.js",
+    "test:integration": "npm run compile && node .vscode-test.mjs",
+    "test:all": "npm run test:unit && npm run test:integration",
+    "test": "npm run test:unit",
+    "package": "npm run compile && npx @vscode/vsce package"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.7",
+    "@types/node": "^20.14.10",
+    "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^2.4.1",
+    "mocha": "^10.7.0",
+    "typescript": "^5.5.4"
+  }
+}
