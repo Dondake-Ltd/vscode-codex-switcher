@@ -1,8 +1,8 @@
 {
   "name": "vscode-codex-switcher",
   "displayName": "Codex Account Switcher",
-  "description": "Tired of logging in and out of your Codex accounts when you run out of usage or when swapping between work and personal? This extension saves the day by adding a dropdown to the status bar letting you switch between named Codex auth snapshots and triggering a quick window reload of VS Code.",
-  "version": "0.1.6",
+  "description": "Switch Codex accounts and profiles from the status bar, store full auth payloads securely, preserve profile-specific state, and keep usage visible while you work.",
+  "version": "0.2.7",
   "publisher": "DondakeLtd",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -19,7 +19,12 @@
     "openai",
     "account",
     "auth",
-    "switcher"
+    "switcher",
+    "profile",
+    "profiles",
+    "usage",
+    "wsl",
+    "ssh"
   ],
   "engines": {
     "vscode": "^1.90.0"
@@ -35,7 +40,15 @@
     "onCommand:codexAccountSwitcher.deleteAccount",
     "onCommand:codexAccountSwitcher.editAccounts",
     "onCommand:codexAccountSwitcher.reloadWindow",
-    "onCommand:codexAccountSwitcher.exportActiveAuth"
+    "onCommand:codexAccountSwitcher.exportActiveAuth",
+    "onCommand:codexAccountSwitcher.renameProfile",
+    "onCommand:codexAccountSwitcher.reauthenticateProfile",
+    "onCommand:codexAccountSwitcher.updateProfileFromCurrentAuth",
+    "onCommand:codexAccountSwitcher.importProfiles",
+    "onCommand:codexAccountSwitcher.exportProfiles",
+    "onCommand:codexAccountSwitcher.loginWithCodexCli",
+    "onCommand:codexAccountSwitcher.manageProfiles",
+    "onCommand:codexAccountSwitcher.showUsageDetails"
   ],
   "contributes": {
     "commands": [
@@ -62,6 +75,38 @@
       {
         "command": "codexAccountSwitcher.exportActiveAuth",
         "title": "Codex Account Switcher: Export Active Auth"
+      },
+      {
+        "command": "codexAccountSwitcher.renameProfile",
+        "title": "Codex Account Switcher: Rename Profile"
+      },
+      {
+        "command": "codexAccountSwitcher.reauthenticateProfile",
+        "title": "Codex Account Switcher: Reauthenticate Profile"
+      },
+      {
+        "command": "codexAccountSwitcher.updateProfileFromCurrentAuth",
+        "title": "Codex Account Switcher: Update Profile From Current Auth"
+      },
+      {
+        "command": "codexAccountSwitcher.importProfiles",
+        "title": "Codex Account Switcher: Import Profiles"
+      },
+      {
+        "command": "codexAccountSwitcher.exportProfiles",
+        "title": "Codex Account Switcher: Export Profiles"
+      },
+      {
+        "command": "codexAccountSwitcher.loginWithCodexCli",
+        "title": "Codex Account Switcher: Login With Codex CLI"
+      },
+      {
+        "command": "codexAccountSwitcher.manageProfiles",
+        "title": "Codex Account Switcher: Manage Accounts and Profiles"
+      },
+      {
+        "command": "codexAccountSwitcher.showUsageDetails",
+        "title": "Codex Account Switcher: Show Usage Details"
       }
     ],
     "configuration": {
@@ -70,12 +115,22 @@
         "codexAccountSwitcher.codexHome": {
           "type": "string",
           "default": "",
-          "description": "Codex home directory. If empty, uses CODEX_HOME or defaults to ~/.codex."
+          "description": "Codex home directory. If empty, uses CODEX_HOME or defaults to ~/.codex. Also used when reading session usage data."
+        },
+        "codexAccountSwitcher.storageMode": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "secretStorage",
+            "remoteFiles"
+          ],
+          "default": "auto",
+          "markdownDescription": "Where saved profiles keep their auth payloads. `secretStorage` is preferred locally. `remoteFiles` is useful for shared SSH/remote extension hosts. `auto` chooses `remoteFiles` in SSH remote sessions and `secretStorage` otherwise."
         },
         "codexAccountSwitcher.accounts": {
           "type": "array",
           "default": [],
-          "description": "Named account snapshots.",
+          "description": "Legacy named account snapshots used only for one-time migration to the profile store.",
           "items": {
             "type": "object",
             "properties": {
@@ -102,7 +157,7 @@
         "codexAccountSwitcher.activeAccount": {
           "type": "string",
           "default": "",
-          "description": "Currently active account name."
+          "markdownDescription": "Legacy active account name used only for one-time migration to the profile store."
         },
         "codexAccountSwitcher.confirmBeforeSwitch": {
           "type": "boolean",
@@ -128,6 +183,60 @@
           "default": "extensionHost",
           "markdownDescription": "Reload strategy after switching: `extensionHost` (recommended, less disruptive) or full `window` reload."
         },
+        "codexAccountSwitcher.showUsageInStatusBar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show last-known 5h and weekly usage in the status bar for the active account/profile."
+        },
+        "codexAccountSwitcher.showUsageInSwitcher": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show last-known 5h and weekly usage in the account switch picker."
+        },
+        "codexAccountSwitcher.usagePercentDisplay": {
+          "type": "string",
+          "enum": [
+            "remaining",
+            "used"
+          ],
+          "default": "remaining",
+          "description": "Whether percentages show remaining allowance or used percentage in the status bar, picker, tooltip, and usage details panel."
+        },
+        "codexAccountSwitcher.usageColorsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable colored usage indicators based on 5h/weekly usage percentage."
+        },
+        "codexAccountSwitcher.usageWarningThreshold": {
+          "type": "number",
+          "default": 70,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Usage percentage threshold where warning coloring starts."
+        },
+        "codexAccountSwitcher.usageWarningColor": {
+          "type": "string",
+          "default": "#f3d898",
+          "description": "Color used for warning-level usage indicators."
+        },
+        "codexAccountSwitcher.usageCriticalThreshold": {
+          "type": "number",
+          "default": 90,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Usage percentage threshold where critical coloring starts."
+        },
+        "codexAccountSwitcher.usageCriticalColor": {
+          "type": "string",
+          "default": "#eca7a7",
+          "description": "Color used for critical-level usage indicators."
+        },
+        "codexAccountSwitcher.usageRefreshIntervalSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 15,
+          "description": "How often to refresh rate-limit usage from Codex session files while VS Code is open."
+        },
         "codexAccountSwitcher.statusBarSide": {
           "type": "string",
           "enum": [
@@ -135,7 +244,7 @@
             "left"
           ],
           "default": "right",
-          "markdownDescription": "Status bar side for the `Codex: ...` item."
+          "markdownDescription": "Status bar side for the account switcher item."
         }
       }
     },
@@ -153,7 +262,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test:unit": "npm run compile && node --test out/test/core.test.js",
+    "test:unit": "npm run compile && node --test out/test/core.test.js out/test/usage.test.js",
     "test:integration": "npm run compile && node .vscode-test.mjs",
     "test:all": "npm run test:unit && npm run test:integration",
     "test": "npm run test:unit",
