@@ -158,6 +158,17 @@ export class ProfileStore {
   }
 
   private hasSameEffectiveContext(profile: ProfileSummary, authData: AuthData): boolean {
+    const accountIdMatch = this.compareIdentityField(profile.accountId, authData.accountId);
+    if (accountIdMatch === false) {
+      return false;
+    }
+
+    const profilePlan = this.normalizePlanType(profile.planType);
+    const authPlan = this.normalizePlanType(authData.planType);
+    if (this.isKnownPlanType(profilePlan) && this.isKnownPlanType(authPlan) && profilePlan !== authPlan) {
+      return false;
+    }
+
     const organizationMatch = this.compareIdentityField(profile.defaultOrganizationId, authData.defaultOrganizationId);
     const hasProfileOrg = Boolean(this.normalizeIdentity(profile.defaultOrganizationId));
     const hasAuthOrg = Boolean(this.normalizeIdentity(authData.defaultOrganizationId));
@@ -166,8 +177,6 @@ export class ProfileStore {
       return organizationMatch === true;
     }
 
-    const profilePlan = this.normalizePlanType(profile.planType);
-    const authPlan = this.normalizePlanType(authData.planType);
     const profileWorkspaceScoped = this.isWorkspaceScopedPlanType(profilePlan);
     const authWorkspaceScoped = this.isWorkspaceScopedPlanType(authPlan);
     const profilePersonal = this.isPersonalPlanType(profilePlan);
@@ -179,10 +188,6 @@ export class ProfileStore {
 
     if (profilePersonal !== authPersonal && (profilePersonal || authPersonal)) {
       return false;
-    }
-
-    if (this.isKnownPlanType(profilePlan) && this.isKnownPlanType(authPlan)) {
-      return profilePlan === authPlan;
     }
 
     return true;

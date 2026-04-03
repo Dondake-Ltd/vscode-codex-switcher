@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.11] - 2026-04-03
+
+### Changed
+- Tightened same-login profile matching again so contexts in the same organization no longer merge when `accountId` or known `planType` differs. Thanks again [@wswaq](https://github.com/wswaq) for the follow-up on [#2](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/2).
+
 ## [0.2.10] - 2026-04-03
 
 ### Changed

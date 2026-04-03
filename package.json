@@ -2,7 +2,7 @@
   "name": "vscode-codex-switcher",
   "displayName": "Codex Account Switcher",
   "description": "Switch Codex accounts and profiles from the status bar, store full auth payloads securely, preserve profile-specific state, and keep usage visible while you work.",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "publisher": "DondakeLtd",
   "license": "MIT",
   "icon": "assets/icon.png",
