@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.10] - 2026-04-03
+
+### Changed
+- Login via Codex CLI now prefers the OpenAI VS Code extension's bundled or configured Codex CLI instead of assuming a global PATH install.
+- Refined the active-profile and usage hover tooltips with denser identity summaries and direct OpenAI usage/profile-management links.
+- Bumped the packaged build so the latest same-login multi-context profile handling can be tested locally.
+
+## [0.2.9] - 2026-04-03
+
+### Changed
+- Added richer hover tooltips for the active profile and usage status bar items, including email, plan type, and organization details when available.
+- Improved the usage hover so account identity and subscription context are visible without opening the picker.
+- Profiles now distinguish between different effective subscription/workspace contexts on the same login, so personal and Team-style Codex contexts can live as separate saved profiles instead of collapsing into one. Thanks [@wswaq](https://github.com/wswaq) for raising this in [#2](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/2).
+
+## [0.2.8] - 2026-04-02
+
+### Changed
+- Refined the Marketplace README copy with a small follow-up wording pass.
+
 ## [0.2.7] - 2026-04-02
 
 ### Changed

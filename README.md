@@ -1,7 +1,3 @@
-+----------------------+
-| Codex Account Switch |
-+----------------------+
-
 # Codex Account Switcher
 
 Humanity has suffered for too long.
@@ -79,6 +75,7 @@ And when you want to check usage:
 - Import the current `auth.json` as a saved profile.
 - Import an auth file manually.
 - Log in with Codex CLI and save the result as a profile.
+- Keep separate saved profiles for different effective contexts on the same OpenAI login, including personal and Team-style Codex contexts.
 - Rename profiles.
 - Delete profiles.
 - Export/import profiles for backup or transfer.

@@ -1,9 +1,17 @@
 import * as fs from 'fs/promises';
+import * as fsSync from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import { execFileSync } from 'child_process';
 import { resolveCodexHome, validateJsonObjectText } from './core';
+
+export type CodexCliLaunchSpec = {
+  shellPath: string;
+  shellArgs: string[];
+  displayText: string;
+  source: 'configured' | 'bundled' | 'path' | 'wsl-path' | 'wsl-bundled';
+};
 
 export type AuthData = {
   idToken: string;
@@ -233,6 +241,132 @@ export async function syncCodexConfigFile(filePath: string, configText: string):
   await atomicWriteTextFile(filePath, configText.endsWith('\n') ? configText : `${configText}\n`);
 }
 
+function getBundledCliRelativeDir(platform: NodeJS.Platform, arch: string): string | undefined {
+  const platformPart = platform === 'win32'
+    ? 'windows'
+    : platform === 'darwin'
+      ? 'macos'
+      : platform === 'linux'
+        ? 'linux'
+        : undefined;
+  const archPart = arch === 'x64'
+    ? 'x86_64'
+    : arch === 'arm64'
+      ? 'aarch64'
+      : undefined;
+
+  if (!platformPart || !archPart) {
+    return undefined;
+  }
+
+  return path.join('bin', `${platformPart}-${archPart}`);
+}
+
+function getConfiguredCliExecutable(): string | undefined {
+  const configured = vscode.workspace.getConfiguration('chatgpt').get<string | null>('cliExecutable', null);
+  const trimmed = configured?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function getBundledCliExecutableForHost(platform: NodeJS.Platform, arch: string): string | undefined {
+  const extension = vscode.extensions.getExtension('openai.chatgpt');
+  if (!extension) {
+    return undefined;
+  }
+
+  const relativeDir = getBundledCliRelativeDir(platform, arch);
+  if (!relativeDir) {
+    return undefined;
+  }
+
+  const executableName = platform === 'win32' ? 'codex.exe' : 'codex';
+  const candidate = path.join(extension.extensionPath, relativeDir, executableName);
+  return fsSync.existsSync(candidate) ? candidate : undefined;
+}
+
+function tryResolveWslCommand(command: string): string | undefined {
+  try {
+    const output = execFileSync('wsl.exe', ['sh', '-lc', `command -v ${command}`], {
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    const resolved = String(output ?? '').trim();
+    return resolved || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function toWslPath(windowsPath: string): string | undefined {
+  try {
+    const output = execFileSync('wsl.exe', ['wslpath', '-a', windowsPath], {
+      encoding: 'utf8',
+      windowsHide: true
+    });
+    const resolved = String(output ?? '').trim();
+    return resolved || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function getCodexLoginHintText(): string {
+  return 'Login via Codex CLI...';
+}
+
 export function getCodexLoginCommandText(): string {
   return shouldUseWslAuthPath() ? 'wsl codex login' : 'codex login';
+}
+
+export async function getCodexCliLaunchSpec(): Promise<CodexCliLaunchSpec> {
+  const configuredCli = getConfiguredCliExecutable();
+
+  if (shouldUseWslAuthPath()) {
+    const wslCodex = tryResolveWslCommand('codex');
+    if (wslCodex) {
+      return {
+        shellPath: 'wsl.exe',
+        shellArgs: ['--', wslCodex, 'login'],
+        displayText: 'wsl codex login',
+        source: 'wsl-path'
+      };
+    }
+
+    const bundledLinuxCli = getBundledCliExecutableForHost('linux', process.arch);
+    const bundledLinuxCliWslPath = bundledLinuxCli ? toWslPath(bundledLinuxCli) : undefined;
+    if (bundledLinuxCliWslPath) {
+      return {
+        shellPath: 'wsl.exe',
+        shellArgs: ['--', bundledLinuxCliWslPath, 'login'],
+        displayText: 'bundled Codex CLI login (WSL)',
+        source: 'wsl-bundled'
+      };
+    }
+  }
+
+  if (configuredCli) {
+    return {
+      shellPath: configuredCli,
+      shellArgs: ['login'],
+      displayText: `${configuredCli} login`,
+      source: 'configured'
+    };
+  }
+
+  const bundledCli = getBundledCliExecutableForHost(process.platform, process.arch);
+  if (bundledCli) {
+    return {
+      shellPath: bundledCli,
+      shellArgs: ['login'],
+      displayText: 'bundled Codex CLI login',
+      source: 'bundled'
+    };
+  }
+
+  return {
+    shellPath: shouldUseWslAuthPath() ? 'wsl.exe' : 'codex',
+    shellArgs: shouldUseWslAuthPath() ? ['--', 'codex', 'login'] : ['login'],
+    displayText: getCodexLoginCommandText(),
+    source: 'path'
+  };
 }

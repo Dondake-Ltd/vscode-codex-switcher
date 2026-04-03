@@ -4,7 +4,9 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {
+  getCodexCliLaunchSpec,
   getCodexLoginCommandText,
+  getCodexLoginHintText,
   getResolvedActiveAuthPath,
   getResolvedCodexHome,
   loadAuthDataFromFile,
@@ -36,6 +38,7 @@ const CMD_EXPORT_PROFILES = 'codexAccountSwitcher.exportProfiles';
 const CMD_LOGIN = 'codexAccountSwitcher.loginWithCodexCli';
 const CMD_MANAGE = 'codexAccountSwitcher.manageProfiles';
 const CMD_SHOW_USAGE_DETAILS = 'codexAccountSwitcher.showUsageDetails';
+const CMD_OPEN_OPENAI_USAGE = 'codexAccountSwitcher.openOpenAiUsage';
 const STATUS_SIDE_SETTING = 'statusBarSide';
 const RELOAD_TARGET_SETTING = 'reloadTarget';
 const STORAGE_MODE_SETTING = 'storageMode';
@@ -142,6 +145,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand(CMD_LOGIN, () => loginViaCodexCli(context)));
   context.subscriptions.push(vscode.commands.registerCommand(CMD_MANAGE, () => manageProfiles(context)));
   context.subscriptions.push(vscode.commands.registerCommand(CMD_SHOW_USAGE_DETAILS, () => showUsageDetailsPanel(context)));
+  context.subscriptions.push(vscode.commands.registerCommand(CMD_OPEN_OPENAI_USAGE, () => vscode.env.openExternal(vscode.Uri.parse('https://platform.openai.com/usage'))));
 
   context.subscriptions.push(
     ...profileStore.createWatchers(() => {
@@ -393,15 +397,13 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
 
   const usageView = getProfileUsageView(context, activeProfileId, activeProfileId);
   statusBar.text = `$(account) ${activeProfile.name}`;
-  statusBar.tooltip = usageView.isStaleForActiveProfile
-    ? `Switch Codex account/profile\n\nLast-known usage for ${activeProfile.name} is stale. Use Codex once after switching to refresh it.`
-    : 'Switch Codex account/profile';
+  statusBar.tooltip = createActiveProfileTooltip(activeProfile, usageView.isStaleForActiveProfile);
   statusBar.show();
 
   if (getConfig().get<boolean>(SHOW_STATUS_BAR_USAGE_SETTING, true)) {
     const snapshot = usageView.entry?.snapshot;
     usageStatusBar.text = buildUsageStatusText(snapshot);
-    usageStatusBar.tooltip = createUsageTooltip(activeProfile.name, usageView);
+    usageStatusBar.tooltip = createUsageTooltip(activeProfile, usageView);
     usageStatusBar.color = snapshot
       ? getUsageStatusBarColor(getMaxUsedPercent(snapshot))
       : new vscode.ThemeColor('statusBarItem.foreground');
@@ -411,25 +413,24 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
   }
 }
 
-function createUsageTooltip(profileName: string, usageView: ProfileUsageView): vscode.MarkdownString {
+function createUsageTooltip(profile: ProfileSummary, usageView: ProfileUsageView): vscode.MarkdownString {
   const snapshot = usageView.entry?.snapshot;
   const tooltip = new vscode.MarkdownString();
   tooltip.isTrusted = true;
   tooltip.supportHtml = true;
   tooltip.supportThemeIcons = true;
 
+  tooltip.appendMarkdown('<div align="center">\n\n');
+  tooltip.appendMarkdown('## $(pulse) Codex Usage\n\n');
+  tooltip.appendMarkdown('</div>\n\n');
+  appendCompactProfileSummaryMarkdown(tooltip, profile, { includeProfileName: true, includeLinks: false });
+
   if (!snapshot) {
-    tooltip.appendMarkdown(`Active Codex account/profile: **${escapeMarkdown(profileName)}**\n\n`);
     tooltip.appendMarkdown('Appears that the current usage cycle is likely unused so far.\n\n');
     tooltip.appendMarkdown(`**Estimated usage:** ${escapeMarkdown(getLikelyUnusedPercentText())} ${escapeMarkdown(getPercentDisplaySuffixLong())} for both 5-hour and weekly windows.\n\n`);
     tooltip.appendMarkdown('Prompt Codex on this profile to replace this estimate with fresh rate-limit data.');
     return tooltip;
   }
-
-  tooltip.appendMarkdown('<div align="center">\n\n');
-  tooltip.appendMarkdown('## $(pulse) Codex Usage\n\n');
-  tooltip.appendMarkdown('</div>\n\n');
-  tooltip.appendMarkdown(`**Profile:** ${escapeMarkdown(profileName)}\n\n`);
 
   if (snapshot.primary) {
     appendUsageSection(tooltip, '$(pulse) 5-Hour Session', snapshot.primary);
@@ -451,6 +452,7 @@ function createUsageTooltip(profileName: string, usageView: ProfileUsageView): v
 
   tooltip.appendMarkdown('---\n\n');
   tooltip.appendMarkdown(`$(clock) Updated: ${escapeMarkdown(formatTimestamp(snapshot.recordedAt))}`);
+  tooltip.appendMarkdown(` • [Open OpenAI Usage](${buildCommandUri(CMD_OPEN_OPENAI_USAGE)})`);
   tooltip.appendMarkdown(' • [Show Details](command:codexAccountSwitcher.showUsageDetails)');
   tooltip.appendMarkdown(' • [Settings](command:codexAccountSwitcher.editAccounts)');
 
@@ -459,6 +461,52 @@ function createUsageTooltip(profileName: string, usageView: ProfileUsageView): v
   }
 
   return tooltip;
+}
+
+function createActiveProfileTooltip(profile: ProfileSummary, isStaleForActiveProfile: boolean): vscode.MarkdownString {
+  const tooltip = new vscode.MarkdownString();
+  tooltip.isTrusted = true;
+  tooltip.supportThemeIcons = true;
+  tooltip.appendMarkdown(`## $(account) ${escapeMarkdown(profile.name)}\n\n`);
+  appendCompactProfileSummaryMarkdown(tooltip, profile, { includeProfileName: false, includeLinks: true });
+  tooltip.appendMarkdown('$(chevron-right) Click to switch Codex account/profile.');
+
+  if (isStaleForActiveProfile) {
+    tooltip.appendMarkdown('\n\n$(warning) Last-known usage for this profile is stale. Use Codex once after switching to refresh it.');
+  }
+
+  return tooltip;
+}
+
+function appendCompactProfileSummaryMarkdown(
+  tooltip: vscode.MarkdownString,
+  profile: ProfileSummary,
+  options: { includeProfileName: boolean; includeLinks: boolean }
+): void {
+  const summaryParts = [
+    `$(mail) ${escapeMarkdown(profile.email || 'Unknown')}`,
+    `$(account) ${escapeMarkdown(profile.planType || 'Unknown')}`
+  ];
+
+  if (options.includeProfileName) {
+    summaryParts.unshift(`$(person) ${escapeMarkdown(profile.name)}`);
+  }
+
+  tooltip.appendMarkdown(`${summaryParts.join('  •  ')}\n\n`);
+
+  if (profile.defaultOrganizationTitle) {
+    tooltip.appendMarkdown(`$(organization) ${escapeMarkdown(profile.defaultOrganizationTitle)}\n\n`);
+  }
+
+  if (options.includeLinks) {
+    tooltip.appendMarkdown(`[Open OpenAI Usage](${buildCommandUri(CMD_OPEN_OPENAI_USAGE)})`);
+    tooltip.appendMarkdown(' • ');
+    tooltip.appendMarkdown('[Manage Profiles](command:codexAccountSwitcher.manageProfiles)\n\n');
+  }
+}
+
+function buildCommandUri(command: string): string {
+  return `command:${command}`;
 }
 
 function appendUsageSection(tooltip: vscode.MarkdownString, title: string, window: UsageWindow): void {
@@ -698,7 +746,7 @@ async function maybeReloadAfterSwitch(profileName: string): Promise<void> {
 async function addProfileFromCurrentAuth(context: vscode.ExtensionContext): Promise<void> {
   const authData = await loadAuthDataFromFile(getResolvedActiveAuthPath());
   if (!authData) {
-    void vscode.window.showErrorMessage(`Could not read auth from ${getResolvedActiveAuthPath()}. Run '${getCodexLoginCommandText()}' first.`);
+    void vscode.window.showErrorMessage(`Could not read auth from ${getResolvedActiveAuthPath()}. Use '${getCodexLoginHintText()}' first.`);
     return;
   }
   authData.codexConfigText = await loadCodexConfigText();
@@ -841,7 +889,7 @@ async function pickProfile(placeHolder: string): Promise<ProfileSummary | undefi
 async function updateStoredProfileFromCurrentAuth(targetProfile: ProfileSummary): Promise<{ authData: import('./auth').AuthData; duplicateProfile?: ProfileSummary }> {
   const authData = await loadAuthDataFromFile(getResolvedActiveAuthPath());
   if (!authData) {
-    throw new Error(`Could not read auth from ${getResolvedActiveAuthPath()}. Run '${getCodexLoginCommandText()}' first.`);
+    throw new Error(`Could not read auth from ${getResolvedActiveAuthPath()}. Use '${getCodexLoginHintText()}' first.`);
   }
   authData.codexConfigText = await loadCodexConfigText();
 
@@ -887,8 +935,9 @@ async function reauthenticateProfile(context: vscode.ExtensionContext): Promise<
     return;
   }
 
+  const loginSpec = await getCodexCliLaunchSpec();
   const proceed = await vscode.window.showInformationMessage(
-    `Reauthenticate '${targetProfile.name}' by running '${getCodexLoginCommandText()}'. When login finishes, the refreshed auth will be saved back into this profile and it will become the active profile.`,
+    `Reauthenticate '${targetProfile.name}' using ${loginSpec.displayText}. When login finishes, the refreshed auth will be saved back into this profile and it will become the active profile.`,
     'Continue',
     'Cancel'
   );
@@ -898,12 +947,13 @@ async function reauthenticateProfile(context: vscode.ExtensionContext): Promise<
   }
 
   const authPath = getResolvedActiveAuthPath();
-  const loginCommand = getCodexLoginCommandText();
 
-  await vscode.commands.executeCommand('workbench.action.terminal.new');
-  setTimeout(() => {
-    void vscode.commands.executeCommand('workbench.action.terminal.sendSequence', { text: `${loginCommand}\n` });
-  }, 400);
+  const terminal = vscode.window.createTerminal({
+    name: 'Codex Login',
+    shellPath: loginSpec.shellPath,
+    shellArgs: loginSpec.shellArgs
+  });
+  terminal.show();
 
   let watcher: fscore.FSWatcher | undefined;
   let handled = false;
@@ -949,7 +999,7 @@ async function reauthenticateProfile(context: vscode.ExtensionContext): Promise<
   }
 
   const selection = await vscode.window.showInformationMessage(
-    `After completing '${loginCommand}', save the refreshed auth back into '${targetProfile.name}'.`,
+    `After completing ${loginSpec.displayText}, save the refreshed auth back into '${targetProfile.name}'.`,
     'Save refreshed auth',
     'Manage profiles'
   );
@@ -1067,12 +1117,14 @@ async function manageProfiles(context: vscode.ExtensionContext, placeholder = 'M
 
 async function loginViaCodexCli(context: vscode.ExtensionContext): Promise<void> {
   const authPath = getResolvedActiveAuthPath();
-  const loginCommand = getCodexLoginCommandText();
+  const loginSpec = await getCodexCliLaunchSpec();
 
-  await vscode.commands.executeCommand('workbench.action.terminal.new');
-  setTimeout(() => {
-    void vscode.commands.executeCommand('workbench.action.terminal.sendSequence', { text: `${loginCommand}\n` });
-  }, 400);
+  const terminal = vscode.window.createTerminal({
+    name: 'Codex Login',
+    shellPath: loginSpec.shellPath,
+    shellArgs: loginSpec.shellArgs
+  });
+  terminal.show();
 
   let watcher: fscore.FSWatcher | undefined;
   const cleanup = (): void => {
@@ -1108,7 +1160,7 @@ async function loginViaCodexCli(context: vscode.ExtensionContext): Promise<void>
   }
 
   const selection = await vscode.window.showInformationMessage(
-    `After completing '${loginCommand}', import the current environment auth.json from ${authPath}.`,
+    `After completing ${loginSpec.displayText}, import the current environment auth.json from ${authPath}.`,
     'Import now',
     'Manage profiles'
   );

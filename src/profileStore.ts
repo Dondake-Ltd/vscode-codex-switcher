@@ -138,6 +138,56 @@ export class ProfileStore {
     return profileNormalized === authNormalized;
   }
 
+  private normalizePlanType(value?: string): string {
+    return this.normalizeIdentity(value).toLowerCase();
+  }
+
+  private isKnownPlanType(value?: string): boolean {
+    const normalized = this.normalizePlanType(value);
+    return Boolean(normalized && normalized !== 'unknown');
+  }
+
+  private isWorkspaceScopedPlanType(value?: string): boolean {
+    const normalized = this.normalizePlanType(value);
+    return ['team', 'business', 'edu', 'enterprise'].some((token) => normalized.includes(token));
+  }
+
+  private isPersonalPlanType(value?: string): boolean {
+    const normalized = this.normalizePlanType(value);
+    return ['free', 'plus', 'pro'].some((token) => normalized.includes(token));
+  }
+
+  private hasSameEffectiveContext(profile: ProfileSummary, authData: AuthData): boolean {
+    const organizationMatch = this.compareIdentityField(profile.defaultOrganizationId, authData.defaultOrganizationId);
+    const hasProfileOrg = Boolean(this.normalizeIdentity(profile.defaultOrganizationId));
+    const hasAuthOrg = Boolean(this.normalizeIdentity(authData.defaultOrganizationId));
+
+    if (hasProfileOrg || hasAuthOrg) {
+      return organizationMatch === true;
+    }
+
+    const profilePlan = this.normalizePlanType(profile.planType);
+    const authPlan = this.normalizePlanType(authData.planType);
+    const profileWorkspaceScoped = this.isWorkspaceScopedPlanType(profilePlan);
+    const authWorkspaceScoped = this.isWorkspaceScopedPlanType(authPlan);
+    const profilePersonal = this.isPersonalPlanType(profilePlan);
+    const authPersonal = this.isPersonalPlanType(authPlan);
+
+    if (profileWorkspaceScoped !== authWorkspaceScoped && (profileWorkspaceScoped || authWorkspaceScoped)) {
+      return false;
+    }
+
+    if (profilePersonal !== authPersonal && (profilePersonal || authPersonal)) {
+      return false;
+    }
+
+    if (this.isKnownPlanType(profilePlan) && this.isKnownPlanType(authPlan)) {
+      return profilePlan === authPlan;
+    }
+
+    return true;
+  }
+
   private matchesAuth(profile: ProfileSummary, authData: AuthData): boolean {
     const identityMatches = [
       this.compareIdentityField(profile.chatgptUserId, authData.chatgptUserId),
@@ -145,18 +195,11 @@ export class ProfileStore {
       this.compareIdentityField(profile.subject, authData.subject)
     ].filter((value): value is boolean => value !== undefined);
 
-    const organizationMatch = this.compareIdentityField(profile.defaultOrganizationId, authData.defaultOrganizationId);
-    const hasProfileOrg = Boolean(this.normalizeIdentity(profile.defaultOrganizationId));
-    const hasAuthOrg = Boolean(this.normalizeIdentity(authData.defaultOrganizationId));
-
     if (identityMatches.length > 0) {
       if (identityMatches.some((value) => !value)) {
         return false;
       }
-      if (hasProfileOrg || hasAuthOrg) {
-        return organizationMatch === true;
-      }
-      return true;
+      return this.hasSameEffectiveContext(profile, authData);
     }
 
     const profileEmail = this.normalizeEmail(profile.email);
@@ -164,27 +207,19 @@ export class ProfileStore {
     const emailComparable = profileEmail && authEmail && profileEmail !== 'unknown' && authEmail !== 'unknown';
     const accountComparable = Boolean(profile.accountId && authData.accountId);
 
-    if ((hasProfileOrg || hasAuthOrg) && organizationMatch === undefined) {
+    if (!emailComparable) {
       return false;
     }
 
-    if (emailComparable && accountComparable && organizationMatch !== undefined) {
-      return profileEmail === authEmail && profile.accountId === authData.accountId && organizationMatch;
+    if (accountComparable && profile.accountId !== authData.accountId) {
+      return false;
     }
 
-    if (emailComparable && organizationMatch !== undefined) {
-      return profileEmail === authEmail && organizationMatch;
+    if (profileEmail !== authEmail) {
+      return false;
     }
 
-    if (emailComparable && accountComparable) {
-      return profileEmail === authEmail && profile.accountId === authData.accountId;
-    }
-
-    if (emailComparable) {
-      return profileEmail === authEmail;
-    }
-
-    return false;
+    return this.hasSameEffectiveContext(profile, authData);
   }
 
   private async readProfilesFile(): Promise<ProfilesFile> {
