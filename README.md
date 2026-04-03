@@ -1,5 +1,7 @@
 # Codex Account Switcher
 
+[![Sponsor Dondake Ltd](https://img.shields.io/badge/Sponsor-Dondake%20Ltd-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/Dondake-Ltd)
+
 Humanity has suffered for too long.
 
 Not war. Not famine. Not taxes.
@@ -156,6 +158,16 @@ This extension is built to avoid splashing secrets around, but you still need ba
 - Do not commit them.
 - Do not casually share them.
 - If a profile stops authenticating, use the reauthentication flow rather than deleting everything in a rage.
+
+## Support The Madness
+
+If this extension saves you time, you can sponsor the people building it.
+
+Dondake Ltd was formed by the longtime friends behind Cyprus Comic Con, a non-profit community platform that has been grinding away for more than 12 years and now reaches nearly 60,000 people a year across its wider event ecosystem.
+
+- Sponsor Dondake Ltd: https://github.com/sponsors/Dondake-Ltd
+- Sponsor Cyprus Comic Con: https://github.com/sponsors/Cyprus-Comic-Con
+- More about us: https://dondake.ltd
 
 ## Notes For Power Users
 
