@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.12] - 2026-04-06
+
+### Fixed
+- Fixed a Windows + WSL auth path resolution bug that could treat the Codex home directory as the active auth file path, causing `EPERM` failures during auth import and account switching backups. Thanks [@Exxenoz](https://github.com/Exxenoz) for the clear report in [#3](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/3).
+- Added regression coverage for expected auth/config file path coercion so directory-style path results no longer slip through unnoticed.
+
 ## [0.2.11] - 2026-04-03
 
 ### Changed

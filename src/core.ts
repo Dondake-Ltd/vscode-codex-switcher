@@ -82,6 +82,20 @@ export function expandPath(
   return p;
 }
 
+export function coerceExpectedFilePath(resolvedPath: string, expectedFileName: string): string {
+  const trimmed = resolvedPath.trim().replace(/^"(.*)"$/, '$1');
+  const normalized = trimmed.replace(/[\\/]+$/, '');
+  if (!normalized) {
+    return expectedFileName;
+  }
+
+  if (path.basename(normalized).toLowerCase() === expectedFileName.toLowerCase()) {
+    return normalized;
+  }
+
+  return path.join(normalized, expectedFileName);
+}
+
 export function getActiveAuthPath(codexHome: string): string {
   return path.join(codexHome, 'auth.json');
 }

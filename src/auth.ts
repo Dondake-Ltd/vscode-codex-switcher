@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import { execFileSync } from 'child_process';
-import { resolveCodexHome, validateJsonObjectText } from './core';
+import { coerceExpectedFilePath, resolveCodexHome, validateJsonObjectText } from './core';
 
 export type CodexCliLaunchSpec = {
   shellPath: string;
@@ -92,22 +92,27 @@ export function shouldUseWslAuthPath(): boolean {
     .get<boolean>('runCodexInWindowsSubsystemForLinux', false);
 }
 
-function resolveWslCodexPath(relativePath: string): string | undefined {
+function resolveWslCodexHomeWindowsPath(): string | undefined {
   try {
     const output = execFileSync(
       'wsl.exe',
       [
         'sh',
         '-lc',
-        'p="${CODEX_HOME:-$HOME/.codex}/' + relativePath + '"; wslpath -w "$p"'
+        'p="${CODEX_HOME:-$HOME/.codex}"; wslpath -w "$p"'
       ],
       { encoding: 'utf8', windowsHide: true }
     );
     const resolved = String(output ?? '').trim();
-    return resolved || undefined;
+    return resolved ? resolved.replace(/[\\/]+$/, '') : undefined;
   } catch {
     return undefined;
   }
+}
+
+function resolveWslCodexPath(relativePath: string): string | undefined {
+  const wslHome = resolveWslCodexHomeWindowsPath();
+  return wslHome ? path.join(wslHome, relativePath) : undefined;
 }
 
 export function getResolvedCodexHome(): string {
@@ -125,22 +130,22 @@ export function getResolvedActiveAuthPath(): string {
   if (shouldUseWslAuthPath()) {
     const wslPath = resolveWslCodexPath('auth.json');
     if (wslPath) {
-      return wslPath;
+      return coerceExpectedFilePath(wslPath, 'auth.json');
     }
   }
 
-  return path.join(getResolvedCodexHome(), 'auth.json');
+  return coerceExpectedFilePath(path.join(getResolvedCodexHome(), 'auth.json'), 'auth.json');
 }
 
 export function getResolvedCodexConfigPath(): string {
   if (shouldUseWslAuthPath()) {
     const wslPath = resolveWslCodexPath('config.toml');
     if (wslPath) {
-      return wslPath;
+      return coerceExpectedFilePath(wslPath, 'config.toml');
     }
   }
 
-  return path.join(getResolvedCodexHome(), 'config.toml');
+  return coerceExpectedFilePath(path.join(getResolvedCodexHome(), 'config.toml'), 'config.toml');
 }
 
 export async function loadCodexConfigText(filePath = getResolvedCodexConfigPath()): Promise<string | undefined> {
