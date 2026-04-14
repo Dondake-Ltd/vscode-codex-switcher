@@ -61,7 +61,7 @@ And when you want to check usage:
 - Choose whether percentages show **remaining** or **used**.
 - Get a richer hover tooltip with reset timing and token usage.
 - Open the full **Codex Usage** panel for comparison and history.
-- If no fresh usage data exists yet, the extension shows a likely-unused estimate instead of acting like the universe has ended.
+- If no fresh usage data exists yet, the extension says `Unknown` instead of pretending you still have plenty left.
 
 ### Codex Usage Details Panel
 
@@ -131,6 +131,7 @@ Most useful ones:
 - `showUsageInSwitcher`: show/hide usage inside the picker.
 - `usagePercentDisplay`: choose `remaining` or `used` percentages.
 - `usageColorsEnabled`: enable colored usage indicators.
+- `usageWarningColor` / `usageCriticalColor`: optional overrides for the warning/critical colors; leave unset for theme-aware defaults.
 - `usageRefreshIntervalSeconds`: control how often usage refreshes while VS Code is open.
 - `reloadTarget`: choose extension-host restart or full window reload behavior.
 
@@ -171,7 +172,7 @@ Dondake Ltd was formed by the longtime friends behind Cyprus Comic Con, a non-pr
 
 ## Notes For Power Users
 
-- Usage is based on local Codex session data, so it reflects what Codex has actually emitted on this machine/runtime.
+- Usage refresh prefers live `codex app-server` rate-limit data and falls back to local Codex session data when needed.
 - The active profile updates live as new usage data appears.
 - Per-profile usage history is retained so the details panel can chart it over time.
 - WSL and remote/SSH setups are supported.

@@ -21,7 +21,7 @@ import {
   normalizeAccounts
 } from './core';
 import { ProfileStore, ProfileSummary } from './profileStore';
-import { getSessionsPath, readLatestUsageSnapshot, TokenUsage, UsageSnapshot, UsageWindow } from './usage';
+import { getSessionsPath, readCurrentUsageSnapshot, TokenUsage, UsageSnapshot, UsageWindow } from './usage';
 
 const EXT_NS = 'codexAccountSwitcher';
 const CMD_SWITCH = 'codexAccountSwitcher.switchAccount';
@@ -39,6 +39,7 @@ const CMD_LOGIN = 'codexAccountSwitcher.loginWithCodexCli';
 const CMD_MANAGE = 'codexAccountSwitcher.manageProfiles';
 const CMD_SHOW_USAGE_DETAILS = 'codexAccountSwitcher.showUsageDetails';
 const CMD_OPEN_OPENAI_USAGE = 'codexAccountSwitcher.openOpenAiUsage';
+const CMD_REFRESH_USAGE = 'codexAccountSwitcher.refreshUsage';
 const STATUS_SIDE_SETTING = 'statusBarSide';
 const RELOAD_TARGET_SETTING = 'reloadTarget';
 const STORAGE_MODE_SETTING = 'storageMode';
@@ -58,6 +59,7 @@ const LAST_SWITCH_AT_KEY = 'lastSwitchAtByProfile';
 
 let statusBar: vscode.StatusBarItem;
 let usageStatusBar: vscode.StatusBarItem;
+let usageRefreshStatusBar: vscode.StatusBarItem;
 let output: vscode.OutputChannel;
 let profileStore: ProfileStore;
 let usageRefreshTimer: NodeJS.Timeout | undefined;
@@ -106,6 +108,22 @@ type ProfileUsageView = {
   isStaleForActiveProfile: boolean;
 };
 
+type SeverityColors = {
+  warning: string;
+  critical: string;
+};
+
+type UsageWindowDescriptor = {
+  key: 'fiveHour' | 'weekly' | 'other';
+  shortLabel: string;
+  longLabel: string;
+  icon: string;
+  window: UsageWindow;
+};
+
+const FIVE_HOUR_WINDOW_MINUTES = 300;
+const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
+
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Codex Account Switcher');
   context.subscriptions.push(output);
@@ -117,6 +135,7 @@ export function activate(context: vscode.ExtensionContext): void {
     dispose: () => {
       statusBar.dispose();
       usageStatusBar.dispose();
+      usageRefreshStatusBar.dispose();
     }
   });
   context.subscriptions.push({
@@ -146,12 +165,19 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand(CMD_MANAGE, () => manageProfiles(context)));
   context.subscriptions.push(vscode.commands.registerCommand(CMD_SHOW_USAGE_DETAILS, () => showUsageDetailsPanel(context)));
   context.subscriptions.push(vscode.commands.registerCommand(CMD_OPEN_OPENAI_USAGE, () => vscode.env.openExternal(vscode.Uri.parse('https://platform.openai.com/usage'))));
+  context.subscriptions.push(vscode.commands.registerCommand(CMD_REFRESH_USAGE, async () => {
+    await refreshUsageAndStatus(context);
+  }));
 
   context.subscriptions.push(
     ...profileStore.createWatchers(() => {
       void refreshUsageAndStatus(context);
     })
   );
+
+  context.subscriptions.push(vscode.window.onDidChangeActiveColorTheme(() => {
+    void refreshUsageAndStatus(context);
+  }));
 
   context.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
     if (!e.affectsConfiguration(EXT_NS) && !e.affectsConfiguration('chatgpt.runCodexInWindowsSubsystemForLinux')) {
@@ -203,11 +229,15 @@ function createStatusBarItems(): void {
 
   usageStatusBar = vscode.window.createStatusBarItem(getStatusBarAlignment(), 999);
   usageStatusBar.command = CMD_SHOW_USAGE_DETAILS;
+
+  usageRefreshStatusBar = vscode.window.createStatusBarItem(getStatusBarAlignment(), 998);
+  usageRefreshStatusBar.command = CMD_REFRESH_USAGE;
 }
 
 function recreateStatusBarItem(): void {
   statusBar.dispose();
   usageStatusBar.dispose();
+  usageRefreshStatusBar.dispose();
   createStatusBarItems();
 }
 
@@ -251,6 +281,33 @@ function scheduleUsageRefresh(context: vscode.ExtensionContext): void {
 
 function getConfig(): vscode.WorkspaceConfiguration {
   return vscode.workspace.getConfiguration(EXT_NS);
+}
+
+function getThemeAwareSeverityDefaults(): SeverityColors {
+  const kind = vscode.window.activeColorTheme.kind;
+  const isLight = kind === vscode.ColorThemeKind.Light || kind === vscode.ColorThemeKind.HighContrastLight;
+  return isLight
+    ? { warning: '#8a6a00', critical: '#b42318' }
+    : { warning: '#f3d898', critical: '#eca7a7' };
+}
+
+function getConfiguredStringOverride(setting: string): string | undefined {
+  const inspected = getConfig().inspect<string>(setting);
+  const configured = inspected?.workspaceFolderValue ?? inspected?.workspaceValue ?? inspected?.globalValue;
+  if (typeof configured !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = configured.trim();
+  return trimmed || undefined;
+}
+
+function getSeverityColors(): SeverityColors {
+  const defaults = getThemeAwareSeverityDefaults();
+  return {
+    warning: getConfiguredStringOverride(USAGE_WARNING_COLOR_SETTING) ?? defaults.warning,
+    critical: getConfiguredStringOverride(USAGE_CRITICAL_COLOR_SETTING) ?? defaults.critical
+  };
 }
 
 function getLegacyAccounts(): AccountConfig[] {
@@ -297,10 +354,13 @@ async function appendUsageHistorySample(context: vscode.ExtensionContext, profil
     return;
   }
 
+  const fiveHourWindow = getFiveHourUsageWindow(snapshot);
+  const weeklyWindow = getWeeklyUsageWindow(snapshot);
+
   const sample: UsageHistorySample = {
     recordedAt: snapshot.recordedAt,
-    primaryUsedPercent: snapshot.primary?.usedPercent,
-    secondaryUsedPercent: snapshot.secondary?.usedPercent
+    primaryUsedPercent: fiveHourWindow?.usedPercent,
+    secondaryUsedPercent: weeklyWindow?.usedPercent
   };
 
   const oneYearAgo = Date.now() - (366 * 24 * 60 * 60 * 1000);
@@ -358,7 +418,7 @@ async function refreshActiveUsageCache(context: vscode.ExtensionContext): Promis
     return;
   }
 
-  const snapshot = await readLatestUsageSnapshot(getResolvedCodexHome());
+  const snapshot = await readCurrentUsageSnapshot(getResolvedCodexHome());
   if (!snapshot) {
     return;
   }
@@ -392,6 +452,7 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
     statusBar.tooltip = 'Configure Codex account and profile switching';
     statusBar.show();
     usageStatusBar.hide();
+    usageRefreshStatusBar.hide();
     return;
   }
 
@@ -402,14 +463,19 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
 
   if (getConfig().get<boolean>(SHOW_STATUS_BAR_USAGE_SETTING, true)) {
     const snapshot = usageView.entry?.snapshot;
-    usageStatusBar.text = buildUsageStatusText(snapshot);
+    usageStatusBar.text = buildUsageStatusText(snapshot, activeProfile.planType);
     usageStatusBar.tooltip = createUsageTooltip(activeProfile, usageView);
     usageStatusBar.color = snapshot
       ? getUsageStatusBarColor(getMaxUsedPercent(snapshot))
       : new vscode.ThemeColor('statusBarItem.foreground');
     usageStatusBar.show();
+    usageRefreshStatusBar.text = '$(refresh)';
+    usageRefreshStatusBar.tooltip = createUsageRefreshTooltip(snapshot);
+    usageRefreshStatusBar.color = new vscode.ThemeColor('statusBarItem.foreground');
+    usageRefreshStatusBar.show();
   } else {
     usageStatusBar.hide();
+    usageRefreshStatusBar.hide();
   }
 }
 
@@ -426,17 +492,14 @@ function createUsageTooltip(profile: ProfileSummary, usageView: ProfileUsageView
   appendCompactProfileSummaryMarkdown(tooltip, profile, { includeProfileName: true, includeLinks: false });
 
   if (!snapshot) {
-    tooltip.appendMarkdown('Appears that the current usage cycle is likely unused so far.\n\n');
-    tooltip.appendMarkdown(`**Estimated usage:** ${escapeMarkdown(getLikelyUnusedPercentText())} ${escapeMarkdown(getPercentDisplaySuffixLong())} for both 5-hour and weekly windows.\n\n`);
-    tooltip.appendMarkdown('Prompt Codex on this profile to replace this estimate with fresh rate-limit data.');
+    tooltip.appendMarkdown('No live usage data is available yet.\n\n');
+    tooltip.appendMarkdown(`**Usage status:** ${escapeMarkdown(buildUnknownUsageSummary(profile.planType))}\n\n`);
+    tooltip.appendMarkdown('Prompt Codex on this profile or use refresh to pick up the next token_count update.');
     return tooltip;
   }
 
-  if (snapshot.primary) {
-    appendUsageSection(tooltip, '$(pulse) 5-Hour Session', snapshot.primary);
-  }
-  if (snapshot.secondary) {
-    appendUsageSection(tooltip, '$(calendar) Weekly Limit', snapshot.secondary);
+  for (const descriptor of getUsageWindowDescriptors(snapshot)) {
+    appendUsageSection(tooltip, `${descriptor.icon} ${descriptor.longLabel}`, descriptor.window);
   }
 
   if (snapshot.totalUsage || snapshot.lastUsage) {
@@ -452,6 +515,8 @@ function createUsageTooltip(profile: ProfileSummary, usageView: ProfileUsageView
 
   tooltip.appendMarkdown('---\n\n');
   tooltip.appendMarkdown(`$(clock) Updated: ${escapeMarkdown(formatTimestamp(snapshot.recordedAt))}`);
+  tooltip.appendMarkdown(`\n\n$(debug) Source: ${escapeMarkdown(formatUsageSource(snapshot.sourceFile))}`);
+  tooltip.appendMarkdown(` • [Refresh](${buildCommandUri(CMD_REFRESH_USAGE)})`);
   tooltip.appendMarkdown(` • [Open OpenAI Usage](${buildCommandUri(CMD_OPEN_OPENAI_USAGE)})`);
   tooltip.appendMarkdown(' • [Show Details](command:codexAccountSwitcher.showUsageDetails)');
   tooltip.appendMarkdown(' • [Settings](command:codexAccountSwitcher.editAccounts)');
@@ -461,6 +526,23 @@ function createUsageTooltip(profile: ProfileSummary, usageView: ProfileUsageView
   }
 
   return tooltip;
+}
+function createUsageRefreshTooltip(snapshot?: UsageSnapshot): string {
+  return snapshot
+    ? `Refresh Codex usage now. Last update: ${formatTimestamp(snapshot.recordedAt)}.`
+    : 'Refresh Codex usage now. No live usage data has been captured yet.';
+}
+
+function formatUsageSource(sourceFile: string): string {
+  if (sourceFile === 'codex app-server') {
+    return 'app-server';
+  }
+
+  if (!sourceFile) {
+    return 'unknown';
+  }
+
+  return `session file (${path.basename(sourceFile)})`;
 }
 
 function createActiveProfileTooltip(profile: ProfileSummary, isStaleForActiveProfile: boolean): vscode.MarkdownString {
@@ -616,14 +698,13 @@ function buildProfilePick(context: vscode.ExtensionContext, profile: ProfileSumm
   }
 
   const detailLines: string[] = [];
-  if (showUsageInSwitcher && usageView.entry?.snapshot.primary) {
-    detailLines.push(buildPickerUsageDetailLine('$(pulse) 5H', usageView.entry.snapshot.primary));
-  }
-  if (showUsageInSwitcher && usageView.entry?.snapshot.secondary) {
-    detailLines.push(buildPickerUsageDetailLine('$(calendar) Weekly', usageView.entry.snapshot.secondary));
+  if (showUsageInSwitcher && usageView.entry?.snapshot) {
+    for (const descriptor of getUsageWindowDescriptors(usageView.entry.snapshot)) {
+      detailLines.push(buildPickerUsageDetailLine(`${descriptor.icon} ${descriptor.shortLabel}`, descriptor.window));
+    }
   }
   if (showUsageInSwitcher && !usageView.entry) {
-    detailLines.push(buildLikelyUnusedPickerDetailLine());
+    detailLines.push(buildUnknownPickerDetailLine(profile.planType));
   }
   if (usageView.isStaleForActiveProfile) {
     detailLines.push('$(warning) Waiting for new Codex activity after switch');
@@ -743,6 +824,25 @@ async function maybeReloadAfterSwitch(profileName: string): Promise<void> {
   triggerReload();
 }
 
+async function confirmDuplicateImport(duplicate: ProfileSummary, sourceLabel: string): Promise<boolean> {
+  const descriptorParts = [duplicate.name];
+  if (duplicate.email && duplicate.email !== 'Unknown') {
+    descriptorParts.push(duplicate.email);
+  }
+  if (duplicate.planType && duplicate.planType !== 'Unknown') {
+    descriptorParts.push(duplicate.planType);
+  }
+
+  const choice = await vscode.window.showWarningMessage(
+    `${sourceLabel} already matches saved profile '${descriptorParts.join(' • ')}'. Update that existing profile instead of creating a duplicate?`,
+    { modal: true },
+    'Update existing profile',
+    'Cancel'
+  );
+
+  return choice === 'Update existing profile';
+}
+
 async function addProfileFromCurrentAuth(context: vscode.ExtensionContext): Promise<void> {
   const authData = await loadAuthDataFromFile(getResolvedActiveAuthPath());
   if (!authData) {
@@ -752,25 +852,36 @@ async function addProfileFromCurrentAuth(context: vscode.ExtensionContext): Prom
   authData.codexConfigText = await loadCodexConfigText();
 
   const duplicate = await profileStore.findDuplicateProfile(authData);
-  const defaultName = duplicate?.name ?? inferDefaultProfileName(authData.email);
-  const name = (await vscode.window.showInputBox({
-    prompt: 'Profile/account name',
-    value: defaultName,
-    validateInput: (value) => value.trim() ? undefined : 'Name is required.'
-  }))?.trim();
+  let profile: ProfileSummary;
 
-  if (!name) {
-    return;
+  if (duplicate) {
+    const confirmed = await confirmDuplicateImport(duplicate, 'The currently active auth');
+    if (!confirmed) {
+      return;
+    }
+
+    await profileStore.replaceProfileAuth(duplicate.id, authData);
+    profile = (await profileStore.getProfile(duplicate.id)) ?? duplicate;
+  } else {
+    const defaultName = inferDefaultProfileName(authData.email);
+    const name = (await vscode.window.showInputBox({
+      prompt: 'New profile/account name',
+      value: defaultName,
+      validateInput: (value) => value.trim() ? undefined : 'Name is required.'
+    }))?.trim();
+
+    if (!name) {
+      return;
+    }
+
+    profile = await profileStore.createProfile(name, authData);
   }
-
-  const profile = duplicate
-    ? (await profileStore.replaceProfileAuth(duplicate.id, authData), await profileStore.renameProfile(duplicate.id, name), (await profileStore.getProfile(duplicate.id)) ?? duplicate)
-    : await profileStore.createProfile(name, authData);
 
   await profileStore.setActiveProfileId(profile.id);
   await setLastSwitchAt(context, profile.id, new Date().toISOString());
   await refreshUsageAndStatus(context);
-  void vscode.window.showInformationMessage(`Imported current auth as profile '${profile.name}'.`);
+  void vscode.window.showInformationMessage(`${duplicate ? 'Updated' : 'Imported'} current auth as profile '${profile.name}'.`);
+  await maybeReloadAfterSwitch(profile.name);
 }
 
 async function importProfileFromFile(context: vscode.ExtensionContext): Promise<void> {
@@ -793,25 +904,36 @@ async function importProfileFromFile(context: vscode.ExtensionContext): Promise<
   }
 
   const duplicate = await profileStore.findDuplicateProfile(authData);
-  const defaultName = duplicate?.name ?? inferDefaultProfileName(authData.email);
-  const name = (await vscode.window.showInputBox({
-    prompt: 'Profile/account name',
-    value: defaultName,
-    validateInput: (value) => value.trim() ? undefined : 'Name is required.'
-  }))?.trim();
+  let profile: ProfileSummary;
 
-  if (!name) {
-    return;
+  if (duplicate) {
+    const confirmed = await confirmDuplicateImport(duplicate, 'The selected auth file');
+    if (!confirmed) {
+      return;
+    }
+
+    await profileStore.replaceProfileAuth(duplicate.id, authData);
+    profile = (await profileStore.getProfile(duplicate.id)) ?? duplicate;
+  } else {
+    const defaultName = inferDefaultProfileName(authData.email);
+    const name = (await vscode.window.showInputBox({
+      prompt: 'New profile/account name',
+      value: defaultName,
+      validateInput: (value) => value.trim() ? undefined : 'Name is required.'
+    }))?.trim();
+
+    if (!name) {
+      return;
+    }
+
+    profile = await profileStore.createProfile(name, authData);
   }
-
-  const profile = duplicate
-    ? (await profileStore.replaceProfileAuth(duplicate.id, authData), await profileStore.renameProfile(duplicate.id, name), (await profileStore.getProfile(duplicate.id)) ?? duplicate)
-    : await profileStore.createProfile(name, authData);
 
   await profileStore.setActiveProfileId(profile.id);
   await setLastSwitchAt(context, profile.id, new Date().toISOString());
   await refreshUsageAndStatus(context);
-  void vscode.window.showInformationMessage(`Imported auth file as profile '${profile.name}'.`);
+  void vscode.window.showInformationMessage(`${duplicate ? 'Updated' : 'Imported'} auth file as profile '${profile.name}'.`);
+  await maybeReloadAfterSwitch(profile.name);
 }
 
 async function deleteProfile(context: vscode.ExtensionContext): Promise<void> {
@@ -1239,8 +1361,7 @@ async function showUsageDetailsPanel(context: vscode.ExtensionContext): Promise<
 }
 
 function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri, activeProfile: UsagePanelProfile, profiles: UsagePanelProfile[]): string {
-  const warningColor = getConfig().get<string>(USAGE_WARNING_COLOR_SETTING, '#f3d898');
-  const criticalColor = getConfig().get<string>(USAGE_CRITICAL_COLOR_SETTING, '#eca7a7');
+  const { warning: warningColor, critical: criticalColor } = getSeverityColors();
   const nonce = getTimestamp();
   const initialCompareId = profiles.find((profile) => profile.id !== activeProfile.id)?.id ?? activeProfile.id;
   const payload = JSON.stringify({
@@ -1449,42 +1570,86 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
           }).join(' ');
         }
 
+        function isFiveHourWindow(window) {
+          return !!window && Math.abs(window.windowMinutes - 300) <= 5;
+        }
+
+        function isWeeklyWindow(window) {
+          return !!window && Math.abs(window.windowMinutes - 10080) <= 60;
+        }
+
+        function formatWindowLabel(windowMinutes, compact) {
+          if (windowMinutes >= 1440 && windowMinutes % 1440 === 0) {
+            const days = windowMinutes / 1440;
+            return compact ? days + 'D' : days + '-Day Window';
+          }
+          if (windowMinutes >= 60 && windowMinutes % 60 === 0) {
+            const hours = windowMinutes / 60;
+            return compact ? hours + 'H' : hours + '-Hour Window';
+          }
+          return compact ? windowMinutes + 'M' : windowMinutes + '-Minute Window';
+        }
+
+        function getWindowDescriptors(snapshot) {
+          const windows = [snapshot?.primary, snapshot?.secondary].filter(Boolean);
+          return windows.map((window) => {
+            if (isFiveHourWindow(window)) {
+              return { key: 'fiveHour', shortLabel: '5H', longLabel: '5-Hour Session', window };
+            }
+            if (isWeeklyWindow(window)) {
+              return { key: 'weekly', shortLabel: 'Weekly', longLabel: 'Weekly Limit', window };
+            }
+            return {
+              key: 'other',
+              shortLabel: formatWindowLabel(window.windowMinutes, true),
+              longLabel: formatWindowLabel(window.windowMinutes, false),
+              window
+            };
+          }).sort((left, right) => {
+            const leftOrder = left.key === 'fiveHour' ? 0 : left.key === 'weekly' ? 1 : 2;
+            const rightOrder = right.key === 'fiveHour' ? 0 : right.key === 'weekly' ? 1 : 2;
+            if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+            return left.window.windowMinutes - right.window.windowMinutes;
+          });
+        }
+
         function renderHistorySection(profile) {
           const range = historyRangeSelect.value || 'week';
           const samples = buildHistorySeries(profile, range);
           if (!samples.length) {
-            return '<section class="history"><div class="section-title">Usage History</div><div class="empty">No historical samples yet. This profile appears likely unused until Codex emits fresh usage data.</div></section>';
+            return '<section class="history"><div class="section-title">Usage History</div><div class="empty">No historical samples yet. Remaining usage is unknown until Codex emits fresh usage data.</div></section>';
           }
 
-          const primaryPoints = samples.map((sample) => typeof sample.primaryUsedPercent === 'number' ? sample.primaryUsedPercent : null).filter((value) => value !== null);
-          const secondaryPoints = samples.map((sample) => typeof sample.secondaryUsedPercent === 'number' ? sample.secondaryUsedPercent : null).filter((value) => value !== null);
-          const peakPrimary = primaryPoints.length ? Math.max(...primaryPoints) : 0;
-          const peakSecondary = secondaryPoints.length ? Math.max(...secondaryPoints) : 0;
+          const fiveHourPoints = samples.map((sample) => typeof sample.primaryUsedPercent === 'number' ? sample.primaryUsedPercent : null).filter((value) => value !== null);
+          const weeklyPoints = samples.map((sample) => typeof sample.secondaryUsedPercent === 'number' ? sample.secondaryUsedPercent : null).filter((value) => value !== null);
           const latest = samples[samples.length - 1];
           const pathWidth = 520;
           const pathHeight = 180;
-          const primaryPath = buildSparklinePath(primaryPoints, pathWidth, pathHeight);
-          const secondaryPath = buildSparklinePath(secondaryPoints, pathWidth, pathHeight);
           const latestText = latest ? formatTimestamp(latest.recordedAt) : 'N/A';
+          const historySeries = [];
+
+          if (fiveHourPoints.length) {
+            historySeries.push({ label: '5H', statLabel: 'Peak 5H Used', color: '#4CAF50', peak: Math.max(...fiveHourPoints), path: buildSparklinePath(fiveHourPoints, pathWidth, pathHeight) });
+          }
+          if (weeklyPoints.length) {
+            historySeries.push({ label: 'Weekly', statLabel: 'Peak Weekly Used', color: '#2196F3', peak: Math.max(...weeklyPoints), path: buildSparklinePath(weeklyPoints, pathWidth, pathHeight) });
+          }
 
           return [
             '<section class="history">',
             '<div class="section-title">Usage History</div>',
             '<div class="history-stats">',
             '<div class="stat"><div class="stat-label">Range</div><div class="stat-value">' + escapeHtml(range.charAt(0).toUpperCase() + range.slice(1)) + '</div></div>',
-            '<div class="stat"><div class="stat-label">Peak 5H Used</div><div class="stat-value">' + escapeHtml(formatPercent(peakPrimary)) + '</div></div>',
-            '<div class="stat"><div class="stat-label">Peak Weekly Used</div><div class="stat-value">' + escapeHtml(formatPercent(peakSecondary)) + '</div></div>',
+            ...historySeries.map((series) => '<div class="stat"><div class="stat-label">' + escapeHtml(series.statLabel) + '</div><div class="stat-value">' + escapeHtml(formatPercent(series.peak)) + '</div></div>'),
             '</div>',
             '<div class="chart-wrap">',
             '<svg viewBox="0 0 ' + pathWidth + ' ' + pathHeight + '" width="100%" height="180" role="img" aria-label="Usage history chart">',
             '<line x1="0" y1="0" x2="0" y2="' + pathHeight + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"></line>',
             '<line x1="0" y1="' + pathHeight + '" x2="' + pathWidth + '" y2="' + pathHeight + '" stroke="rgba(255,255,255,0.15)" stroke-width="1"></line>',
-            primaryPath ? '<path d="' + primaryPath + '" fill="none" stroke="#4CAF50" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>' : '',
-            secondaryPath ? '<path d="' + secondaryPath + '" fill="none" stroke="#2196F3" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>' : '',
+            ...historySeries.map((series) => series.path ? '<path d="' + series.path + '" fill="none" stroke="' + series.color + '" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>' : ''),
             '</svg>',
             '<div class="chart-legend">',
-            '<span class="legend-chip"><span class="legend-line" style="background:#4CAF50"></span>5H used %</span>',
-            '<span class="legend-chip"><span class="legend-line" style="background:#2196F3"></span>Weekly used %</span>',
+            ...historySeries.map((series) => '<span class="legend-chip"><span class="legend-line" style="background:' + series.color + '"></span>' + escapeHtml(series.label) + ' used %</span>'),
             '<span class="legend-chip">Latest sample: ' + escapeHtml(latestText) + '</span>',
             '</div>',
             '</div>',
@@ -1510,7 +1675,7 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
 
         function renderTokenSection(profile) {
           if (!profile.snapshot?.totalUsage && !profile.snapshot?.lastUsage) {
-            return '<section class="tokens"><h3>Token Usage</h3><div class="details">Likely unused so far. Prompt Codex on this profile to populate live token usage.</div></section>';
+            return '<section class="tokens"><h3>Token Usage</h3><div class="details">No live token usage data yet. Prompt Codex on this profile to populate it.</div></section>';
           }
           return [
             '<section class="tokens">',
@@ -1544,9 +1709,8 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
             '</div>',
             compareActions,
             '</div>',
-            noData ? '<div class="empty">Likely unused this cycle. Prompt Codex on this profile to replace this estimate with live usage data.</div>' : '',
-            snapshot?.primary ? renderWindowSection('5-Hour Session', snapshot.primary) : '',
-            snapshot?.secondary ? renderWindowSection('Weekly Limit', snapshot.secondary) : '',
+            noData ? '<div class="empty">Remaining usage is unknown until Codex emits live usage data for this profile.</div>' : '',
+            ...getWindowDescriptors(snapshot).map((descriptor) => renderWindowSection(descriptor.longLabel, descriptor.window)),
             renderHistorySection(profile),
             renderTokenSection(profile),
             '</article>'
@@ -1673,19 +1837,106 @@ function parseIsoMs(value?: string): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function buildUsageStatusText(snapshot?: UsageSnapshot): string {
+function getAllUsageWindows(snapshot?: UsageSnapshot): UsageWindow[] {
   if (!snapshot) {
-    const estimate = getLikelyUnusedPercentText();
-    return `⚡ 5H: ${estimate} | Weekly: ${estimate}`;
+    return [];
   }
 
-  const primaryText = snapshot.primary && !isUsageOutdated(snapshot.primary)
-    ? `${formatDisplayPercentCompact(snapshot.primary)} ${getPercentDisplaySuffixCompact()}`
-    : getLikelyUnusedPercentText();
-  const weeklyText = snapshot.secondary && !isUsageOutdated(snapshot.secondary)
-    ? `${formatDisplayPercentCompact(snapshot.secondary)} ${getPercentDisplaySuffixCompact()}`
-    : getLikelyUnusedPercentText();
-  return `⚡ 5H: ${primaryText} | Weekly: ${weeklyText}`;
+  return [snapshot.primary, snapshot.secondary].filter((window): window is UsageWindow => !!window);
+}
+
+function isFiveHourWindow(window: UsageWindow): boolean {
+  return Math.abs(window.windowMinutes - FIVE_HOUR_WINDOW_MINUTES) <= 5;
+}
+
+function isWeeklyWindow(window: UsageWindow): boolean {
+  return Math.abs(window.windowMinutes - WEEKLY_WINDOW_MINUTES) <= 60;
+}
+
+function getFiveHourUsageWindow(snapshot?: UsageSnapshot): UsageWindow | undefined {
+  return getAllUsageWindows(snapshot).find((window) => isFiveHourWindow(window));
+}
+
+function getWeeklyUsageWindow(snapshot?: UsageSnapshot): UsageWindow | undefined {
+  return getAllUsageWindows(snapshot).find((window) => isWeeklyWindow(window));
+}
+
+function formatWindowLabel(windowMinutes: number, compact: boolean): string {
+  if (windowMinutes >= 1440 && windowMinutes % 1440 === 0) {
+    const days = windowMinutes / 1440;
+    return compact ? `${days}D` : `${days}-Day Window`;
+  }
+  if (windowMinutes >= 60 && windowMinutes % 60 === 0) {
+    const hours = windowMinutes / 60;
+    return compact ? `${hours}H` : `${hours}-Hour Window`;
+  }
+  return compact ? `${windowMinutes}M` : `${windowMinutes}-Minute Window`;
+}
+
+function getUsageWindowDescriptors(snapshot?: UsageSnapshot): UsageWindowDescriptor[] {
+  const descriptors = getAllUsageWindows(snapshot).map((window) => {
+    if (isFiveHourWindow(window)) {
+      return { key: 'fiveHour' as const, shortLabel: '5H', longLabel: '5-Hour Session', icon: '$(pulse)', window };
+    }
+    if (isWeeklyWindow(window)) {
+      return { key: 'weekly' as const, shortLabel: 'Weekly', longLabel: 'Weekly Limit', icon: '$(calendar)', window };
+    }
+
+    return {
+      key: 'other' as const,
+      shortLabel: formatWindowLabel(window.windowMinutes, true),
+      longLabel: formatWindowLabel(window.windowMinutes, false),
+      icon: '$(dashboard)',
+      window
+    };
+  });
+
+  return descriptors.sort((left, right) => {
+    const leftOrder = left.key === 'fiveHour' ? 0 : left.key === 'weekly' ? 1 : 2;
+    const rightOrder = right.key === 'fiveHour' ? 0 : right.key === 'weekly' ? 1 : 2;
+    if (leftOrder !== rightOrder) {
+      return leftOrder - rightOrder;
+    }
+    return left.window.windowMinutes - right.window.windowMinutes;
+  });
+}
+
+function buildUnknownDisplayEntries(planType?: string): Array<{ icon: string; shortLabel: string; text: string }> {
+  if ((planType ?? '').toLowerCase() === 'free') {
+    return [{ icon: '$(question)', shortLabel: 'Weekly', text: 'Unknown' }];
+  }
+
+  return [
+    { icon: '$(question)', shortLabel: '5H', text: 'Unknown' },
+    { icon: '$(question)', shortLabel: 'Weekly', text: 'Unknown' }
+  ];
+}
+
+function buildUnknownStatusText(planType?: string): string {
+  const parts = buildUnknownDisplayEntries(planType).map((entry) => `${entry.shortLabel}: ${entry.text}`);
+  return `$(question) ${parts.join(' | ')}`;
+}
+
+function buildUnknownUsageSummary(planType?: string): string {
+  return buildUnknownDisplayEntries(planType)
+    .map((entry) => `${entry.shortLabel} ${entry.text}`)
+    .join(' | ');
+}
+
+function buildUsageStatusText(snapshot?: UsageSnapshot, planType?: string): string {
+  const descriptors = getUsageWindowDescriptors(snapshot);
+  if (!descriptors.length) {
+    return buildUnknownStatusText(planType);
+  }
+
+  const parts = descriptors.map((descriptor) => {
+    const text = !isUsageOutdated(descriptor.window)
+      ? `${formatDisplayPercentCompact(descriptor.window)} ${getPercentDisplaySuffixCompact()}`
+      : 'Unknown';
+    return `${descriptor.shortLabel}: ${text}`;
+  });
+
+  return `$(pulse) ${parts.join(' | ')}`;
 }
 
 function buildUsageWindowInline(label: string, window: UsageWindow): string {
@@ -1696,9 +1947,10 @@ function buildPickerUsageDetailLine(label: string, window: UsageWindow): string 
   return `${label}: ${formatDisplayPercent(window)} ${getPercentDisplaySuffixLong()} (${formatResetShort(window.resetsAt)})`;
 }
 
-function buildLikelyUnusedPickerDetailLine(): string {
-  const estimate = getLikelyUnusedPercentText();
-  return `$(pulse) 5H: ${estimate} ${getPercentDisplaySuffixLong()} (likely unused)  •  $(calendar) Weekly: ${estimate} ${getPercentDisplaySuffixLong()} (likely unused)`;
+function buildUnknownPickerDetailLine(planType?: string): string {
+  return buildUnknownDisplayEntries(planType)
+    .map((entry) => `${entry.icon} ${entry.shortLabel}: ${entry.text}`)
+    .join('  |  ');
 }
 
 function formatUsedPercentCompact(window: UsageWindow): string {
@@ -1718,8 +1970,7 @@ function getUsageStatusBarColor(usedPercent: number): string | vscode.ThemeColor
 
   const warningThreshold = getConfig().get<number>(USAGE_WARNING_THRESHOLD_SETTING, 70);
   const criticalThreshold = getConfig().get<number>(USAGE_CRITICAL_THRESHOLD_SETTING, 90);
-  const warningColor = getConfig().get<string>(USAGE_WARNING_COLOR_SETTING, '#f3d898');
-  const criticalColor = getConfig().get<string>(USAGE_CRITICAL_COLOR_SETTING, '#eca7a7');
+  const { warning: warningColor, critical: criticalColor } = getSeverityColors();
 
   if (usedPercent >= criticalThreshold) {
     return criticalColor;
@@ -1731,7 +1982,7 @@ function getUsageStatusBarColor(usedPercent: number): string | vscode.ThemeColor
 }
 
 function getMaxUsedPercent(snapshot: UsageSnapshot): number {
-  return Math.max(snapshot.primary?.usedPercent ?? 0, snapshot.secondary?.usedPercent ?? 0);
+  return getAllUsageWindows(snapshot).reduce((max, window) => Math.max(max, window.usedPercent), 0);
 }
 
 function getTimeProgressPercent(window: UsageWindow): number {
@@ -1852,4 +2103,6 @@ function formatClock(date: Date): string {
 function isSameLocalDate(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
+
+
 

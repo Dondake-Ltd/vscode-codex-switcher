@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.13] - 2026-04-14
+
+### Fixed
+- Darkened the warning and critical usage colors so status bar usage indicators remain readable on light themes. Thanks [@tsenturion](https://github.com/tsenturion) for flagging this in [#7](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/7).
+- Fixed free-plan usage rendering so weekly-only Codex limits no longer appear as fake 5-hour + weekly windows. Thanks [@tsenturion](https://github.com/tsenturion) for reporting this in [#5](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/5).
+- Replaced optimistic `~100%` fallback usage guesses with explicit `Unknown` states when no live Codex rate-limit data is available, so exhausted profiles are no longer overstated. Thanks [@tsenturion](https://github.com/tsenturion) for reporting this in [#6](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/6).
+- Importing current auth or auth files no longer silently overwrites a matching saved profile; duplicate imports now require explicit confirmation. Thanks [@mxyue](https://github.com/mxyue) for reporting this in [#4](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/4).
+- Creating or importing a profile that becomes active now follows the normal reload path, so Codex does not stay on the previously active profile after `Import now` or other import flows.
+
+### Improved
+- Usage refresh now probes `codex app-server` for live `account/rateLimits/read` data before falling back to local session files, improving the odds of showing fresher Codex limits sooner.
+- Session fallback now prioritizes recent files, reuses the latest known session file, and tails appended JSONL content before falling back to broader scans.
+- Usage tooltips now show which data source is active (`app-server` or session file) to make troubleshooting freshness and correctness easier.
+
 ## [0.2.12] - 2026-04-06
 
 ### Fixed
@@ -152,3 +166,4 @@ All notable changes to this project are documented in this file.
 - Auth snapshot swap + backup behavior.
 - Setup wizard flow.
 - README, packaging, and test scaffolding.
+

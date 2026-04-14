@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { getSessionsPath, readLatestUsageSnapshot } from '../usage';
+import { getSessionsPath, normalizeAppServerUsageSnapshot, readLatestUsageSnapshot } from '../usage';
 
 async function makeTempCodexHome(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'codex-switcher-usage-'));
@@ -124,4 +124,28 @@ test('readLatestUsageSnapshot returns undefined when there is no token_count eve
 
   const snapshot = await readLatestUsageSnapshot(codexHome);
   assert.equal(snapshot, undefined);
+});
+
+test('normalizeAppServerUsageSnapshot maps account/rateLimits/read output', () => {
+  const snapshot = normalizeAppServerUsageSnapshot(
+    {
+      rateLimits: {
+        limitId: 'codex',
+        planType: 'plus',
+        primary: { usedPercent: 98, windowDurationMins: 300, resetsAt: 1776191545 },
+        secondary: { usedPercent: 78, windowDurationMins: 10080, resetsAt: 1776438181 }
+      }
+    },
+    '2026-04-14T16:00:29.000Z'
+  );
+
+  assert.ok(snapshot);
+  assert.equal(snapshot.sourceFile, 'codex app-server');
+  assert.equal(snapshot.recordedAt, '2026-04-14T16:00:29.000Z');
+  assert.equal(snapshot.planType, 'plus');
+  assert.equal(snapshot.limitId, 'codex');
+  assert.equal(snapshot.primary?.usedPercent, 98);
+  assert.equal(snapshot.primary?.windowMinutes, 300);
+  assert.equal(snapshot.secondary?.usedPercent, 78);
+  assert.equal(snapshot.secondary?.windowMinutes, 10080);
 });

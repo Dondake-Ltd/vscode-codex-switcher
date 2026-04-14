@@ -323,16 +323,17 @@ export function getCodexLoginCommandText(): string {
   return shouldUseWslAuthPath() ? 'wsl codex login' : 'codex login';
 }
 
-export async function getCodexCliLaunchSpec(): Promise<CodexCliLaunchSpec> {
+export async function getCodexCliCommandSpec(commandArgs: string[], displayText?: string): Promise<CodexCliLaunchSpec> {
   const configuredCli = getConfiguredCliExecutable();
+  const fallbackDisplayText = displayText ?? `codex ${commandArgs.join(' ')}`;
 
   if (shouldUseWslAuthPath()) {
     const wslCodex = tryResolveWslCommand('codex');
     if (wslCodex) {
       return {
         shellPath: 'wsl.exe',
-        shellArgs: ['--', wslCodex, 'login'],
-        displayText: 'wsl codex login',
+        shellArgs: ['--', wslCodex, ...commandArgs],
+        displayText: displayText ?? `wsl codex ${commandArgs.join(' ')}`,
         source: 'wsl-path'
       };
     }
@@ -342,8 +343,8 @@ export async function getCodexCliLaunchSpec(): Promise<CodexCliLaunchSpec> {
     if (bundledLinuxCliWslPath) {
       return {
         shellPath: 'wsl.exe',
-        shellArgs: ['--', bundledLinuxCliWslPath, 'login'],
-        displayText: 'bundled Codex CLI login (WSL)',
+        shellArgs: ['--', bundledLinuxCliWslPath, ...commandArgs],
+        displayText: displayText ?? `bundled Codex CLI ${commandArgs.join(' ')} (WSL)`,
         source: 'wsl-bundled'
       };
     }
@@ -352,8 +353,8 @@ export async function getCodexCliLaunchSpec(): Promise<CodexCliLaunchSpec> {
   if (configuredCli) {
     return {
       shellPath: configuredCli,
-      shellArgs: ['login'],
-      displayText: `${configuredCli} login`,
+      shellArgs: commandArgs,
+      displayText: displayText ?? `${configuredCli} ${commandArgs.join(' ')}`,
       source: 'configured'
     };
   }
@@ -362,16 +363,20 @@ export async function getCodexCliLaunchSpec(): Promise<CodexCliLaunchSpec> {
   if (bundledCli) {
     return {
       shellPath: bundledCli,
-      shellArgs: ['login'],
-      displayText: 'bundled Codex CLI login',
+      shellArgs: commandArgs,
+      displayText: displayText ?? `bundled Codex CLI ${commandArgs.join(' ')}`,
       source: 'bundled'
     };
   }
 
   return {
     shellPath: shouldUseWslAuthPath() ? 'wsl.exe' : 'codex',
-    shellArgs: shouldUseWslAuthPath() ? ['--', 'codex', 'login'] : ['login'],
-    displayText: getCodexLoginCommandText(),
+    shellArgs: shouldUseWslAuthPath() ? ['--', 'codex', ...commandArgs] : commandArgs,
+    displayText: fallbackDisplayText,
     source: 'path'
   };
+}
+
+export async function getCodexCliLaunchSpec(): Promise<CodexCliLaunchSpec> {
+  return getCodexCliCommandSpec(['login'], getCodexLoginCommandText());
 }

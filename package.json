@@ -2,7 +2,7 @@
   "name": "vscode-codex-switcher",
   "displayName": "Codex Account Switcher",
   "description": "Switch Codex accounts and profiles from the status bar, store full auth payloads securely, preserve profile-specific state, and keep usage visible while you work.",
-  "version": "0.2.12",
+  "version": "0.2.13",
   "publisher": "DondakeLtd",
   "license": "MIT",
   "icon": "assets/icon.png",
@@ -216,8 +216,8 @@
         },
         "codexAccountSwitcher.usageWarningColor": {
           "type": "string",
-          "default": "#f3d898",
-          "description": "Color used for warning-level usage indicators."
+          "default": "",
+          "description": "Optional override for warning-level usage indicators. Leave empty to use theme-aware defaults."
         },
         "codexAccountSwitcher.usageCriticalThreshold": {
           "type": "number",
@@ -228,14 +228,14 @@
         },
         "codexAccountSwitcher.usageCriticalColor": {
           "type": "string",
-          "default": "#eca7a7",
-          "description": "Color used for critical-level usage indicators."
+          "default": "",
+          "description": "Optional override for critical-level usage indicators. Leave empty to use theme-aware defaults."
         },
         "codexAccountSwitcher.usageRefreshIntervalSeconds": {
           "type": "number",
           "default": 30,
           "minimum": 15,
-          "description": "How often to refresh rate-limit usage from Codex session files while VS Code is open."
+          "description": "How often to refresh Codex rate-limit usage while VS Code is open. Live app-server data is preferred, with local session files as fallback."
         },
         "codexAccountSwitcher.statusBarSide": {
           "type": "string",
