@@ -551,7 +551,8 @@ function createActiveProfileTooltip(profile: ProfileSummary, isStaleForActivePro
   tooltip.supportThemeIcons = true;
   tooltip.appendMarkdown(`## $(account) ${escapeMarkdown(profile.name)}\n\n`);
   appendCompactProfileSummaryMarkdown(tooltip, profile, { includeProfileName: false, includeLinks: true });
-  tooltip.appendMarkdown('$(chevron-right) Click to switch Codex account/profile.');
+  tooltip.appendMarkdown(`[Switch Profiles](${buildCommandUri(CMD_SWITCH)})`);
+  tooltip.appendMarkdown(' • Use the status bar item to switch Codex account/profile.');
 
   if (isStaleForActiveProfile) {
     tooltip.appendMarkdown('\n\n$(warning) Last-known usage for this profile is stale. Use Codex once after switching to refresh it.');
@@ -611,7 +612,6 @@ function appendUsageSection(tooltip: vscode.MarkdownString, title: string, windo
 
 async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise<void> {
   await maybeWarnEnsureFileBasedCreds(context);
-  await refreshUsageAndStatus(context);
 
   const profiles = await profileStore.listProfiles();
   if (!profiles.length) {
@@ -620,6 +620,68 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
   }
 
   const activeProfileId = await profileStore.getActiveProfileId();
+  const quickPick = vscode.window.createQuickPick<SwitcherQuickPickItem>();
+  quickPick.placeholder = 'Select a Codex account/profile or action';
+  quickPick.items = buildSwitcherItems(context, profiles, activeProfileId);
+  quickPick.busy = true;
+  quickPick.show();
+
+  let closed = false;
+
+  void (async () => {
+    await refreshUsageAndStatus(context);
+    const refreshedProfiles = await profileStore.listProfiles();
+    const refreshedActiveProfileId = await profileStore.getActiveProfileId();
+    if (!closed) {
+      quickPick.items = buildSwitcherItems(context, refreshedProfiles, refreshedActiveProfileId);
+      quickPick.busy = false;
+    }
+  })().catch((error) => {
+    output.appendLine(`Background switcher refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (!closed) {
+      quickPick.busy = false;
+    }
+  });
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+
+    const finish = (): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      closed = true;
+      acceptDisposable.dispose();
+      hideDisposable.dispose();
+      quickPick.dispose();
+      resolve();
+    };
+
+    const acceptDisposable = quickPick.onDidAccept(() => {
+      const chosen = quickPick.selectedItems[0];
+      if (!chosen || !('itemType' in chosen)) {
+        return;
+      }
+
+      void (async () => {
+        quickPick.hide();
+        finish();
+        await handleSwitcherChoice(chosen, context);
+      })();
+    });
+
+    const hideDisposable = quickPick.onDidHide(() => {
+      finish();
+    });
+  });
+}
+
+function buildSwitcherItems(
+  context: vscode.ExtensionContext,
+  profiles: ProfileSummary[],
+  activeProfileId?: string
+): SwitcherQuickPickItem[] {
   const picks: SwitcherQuickPickItem[] = profiles.map((profile) => buildProfilePick(context, profile, activeProfileId));
   picks.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
   picks.push({ itemType: 'action', actionId: 'addCurrent', label: '$(add) Import current auth.json', detail: 'Create or update a profile from the currently active Codex auth file.' });
@@ -632,16 +694,14 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
   picks.push({ itemType: 'action', actionId: 'exportProfiles', label: '$(export) Export profiles...', detail: 'Export saved profiles for transfer or backup.' });
   picks.push({ itemType: 'action', actionId: 'importProfiles', label: '$(cloud-upload) Import profiles...', detail: 'Import profiles from a previous export.' });
   picks.push({ itemType: 'action', actionId: 'settings', label: '$(gear) Open settings', detail: 'Edit Codex Account Switcher settings.' });
+  return picks;
+}
 
-  const chosen = await vscode.window.showQuickPick(picks, {
-    placeHolder: 'Select a Codex account/profile or action'
-  });
-
-  if (!chosen) {
-    return;
-  }
-
-  if ('itemType' in chosen && chosen.itemType === 'action') {
+async function handleSwitcherChoice(
+  chosen: ProfileQuickPickItem | ActionQuickPickItem,
+  context: vscode.ExtensionContext
+): Promise<void> {
+  if (chosen.itemType === 'action') {
     switch (chosen.actionId) {
       case 'addCurrent':
         await addProfileFromCurrentAuth(context);
@@ -677,9 +737,7 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
     }
   }
 
-  if ('itemType' in chosen && chosen.itemType === 'profile') {
-    await switchToProfile(chosen.profileId, context);
-  }
+  await switchToProfile(chosen.profileId, context);
 }
 
 function buildProfilePick(context: vscode.ExtensionContext, profile: ProfileSummary, activeProfileId?: string): ProfileQuickPickItem {

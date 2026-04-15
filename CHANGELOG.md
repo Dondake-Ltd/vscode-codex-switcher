@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.14] - 2026-04-16
+
+### Fixed
+- Opening the account/profile picker no longer blocks on a full usage refresh, so the list appears immediately and refreshes in place instead of stalling for several seconds. Thanks [@tsenturion](https://github.com/tsenturion) for reporting this in [#8](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/8).
+- Replaced the misleading non-clickable “Click to switch” text in the active-profile tooltip with a real `Switch Profiles` command link and clearer wording. Thanks [@tsenturion](https://github.com/tsenturion) for flagging this in [#9](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/9).
+
 ## [0.2.13] - 2026-04-14
 
 ### Fixed
@@ -166,4 +172,5 @@ All notable changes to this project are documented in this file.
 - Auth snapshot swap + backup behavior.
 - Setup wizard flow.
 - README, packaging, and test scaffolding.
+
 
