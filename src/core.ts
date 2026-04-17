@@ -33,6 +33,10 @@ export function getEnabledAccounts(accounts: AccountConfig[]): AccountConfig[] {
   return accounts.filter((a) => a.enabled !== false);
 }
 
+export function shouldActivateImportedProfile(activeProfileId: string | undefined, importedProfileId: string): boolean {
+  return !activeProfileId || activeProfileId === importedProfileId;
+}
+
 export function resolveCodexHome(ctx: ResolveContext): string {
   const configured = (ctx.configuredCodexHome ?? '').trim();
   if (configured) {

@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.2.15] - 2026-04-17
+
+### Fixed
+- Saved profiles now capture and restore Codex `cap_sid` session state alongside `auth.json`, preventing account switches from leaving stale challenge/session state behind.
+- Switching to a profile that does not yet have a saved `cap_sid` now clears any previously active `cap_sid` file instead of reusing mismatched session state.
+- Existing active profiles can now hydrate their saved `cap_sid` from the current environment on upgrade, reducing the odds of the official Codex extension getting stuck in an endless auth spinner after switching.
+
 ## [0.2.14] - 2026-04-16
 
 ### Fixed
@@ -172,5 +179,4 @@ All notable changes to this project are documented in this file.
 - Auth snapshot swap + backup behavior.
 - Setup wizard flow.
 - README, packaging, and test scaffolding.
-
 

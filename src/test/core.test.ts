@@ -9,6 +9,7 @@ import {
   getTimestamp,
   normalizeAccounts,
   resolveCodexHome,
+  shouldActivateImportedProfile,
   validateJsonObjectText
 } from '../core';
 
@@ -36,6 +37,12 @@ test('getEnabledAccounts filters disabled accounts', () => {
     enabled.map((a) => a.name),
     ['Personal', 'Team']
   );
+});
+
+test('shouldActivateImportedProfile only activates when there is no active profile or the imported profile is already active', () => {
+  assert.equal(shouldActivateImportedProfile(undefined, 'profile-a'), true);
+  assert.equal(shouldActivateImportedProfile('profile-a', 'profile-a'), true);
+  assert.equal(shouldActivateImportedProfile('profile-a', 'profile-b'), false);
 });
 
 test('resolveCodexHome uses configured path first', () => {

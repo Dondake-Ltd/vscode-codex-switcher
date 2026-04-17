@@ -4,7 +4,18 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import { AuthData, getResolvedActiveAuthPath, getResolvedCodexConfigPath, loadAuthDataFromFile, loadCodexConfigText, syncAuthFile, syncCodexConfigFile } from './auth';
+import {
+  AuthData,
+  getResolvedActiveAuthPath,
+  getResolvedCapSidPath,
+  getResolvedCodexConfigPath,
+  loadAuthDataFromFile,
+  loadCapSidText,
+  loadCodexConfigText,
+  syncAuthFile,
+  syncCapSidFile,
+  syncCodexConfigFile
+} from './auth';
 import { AccountConfig } from './core';
 
 export type StorageMode = 'auto' | 'secretStorage' | 'remoteFiles';
@@ -28,6 +39,7 @@ type StoredProfileSecret = {
   idToken: string;
   accessToken: string;
   refreshToken: string;
+  capSid?: string;
   accountId?: string;
   authJson: Record<string, unknown>;
   codexConfigText?: string;
@@ -315,6 +327,7 @@ export class ProfileStore {
       idToken: secret.idToken,
       accessToken: secret.accessToken,
       refreshToken: secret.refreshToken,
+      capSid: secret.capSid,
       accountId: secret.accountId ?? profile.accountId,
       defaultOrganizationId: profile.defaultOrganizationId,
       defaultOrganizationTitle: profile.defaultOrganizationTitle,
@@ -356,10 +369,32 @@ export class ProfileStore {
       idToken: authData.idToken,
       accessToken: authData.accessToken,
       refreshToken: authData.refreshToken,
+      capSid: authData.capSid,
       accountId: authData.accountId,
       authJson: authData.authJson,
       codexConfigText: authData.codexConfigText
     };
+  }
+
+  private async maybeHydrateCapSidFromCurrentEnvironment(profileId: string, authData: AuthData): Promise<AuthData> {
+    if (authData.capSid) {
+      return authData;
+    }
+
+    const currentCapSid = await loadCapSidText();
+    if (!currentCapSid) {
+      return authData;
+    }
+
+    const currentAuth = await loadAuthDataFromFile(getResolvedActiveAuthPath());
+    const profile = await this.getProfile(profileId);
+    if (!currentAuth || !profile || !this.matchesAuth(profile, currentAuth)) {
+      return authData;
+    }
+
+    const hydrated = { ...authData, capSid: currentCapSid };
+    await this.writeStoredSecret(profileId, this.buildStoredSecret(hydrated));
+    return hydrated;
   }
 
   async createProfile(name: string, authData: AuthData): Promise<ProfileSummary> {
@@ -451,11 +486,13 @@ export class ProfileStore {
   async setActiveProfileId(profileId: string | undefined): Promise<boolean> {
     const previous = await this.getActiveProfileId();
     if (profileId) {
-      const authData = await this.loadAuthData(profileId);
-      if (!authData) {
+      const storedAuthData = await this.loadAuthData(profileId);
+      if (!storedAuthData) {
         return false;
       }
+      const authData = await this.maybeHydrateCapSidFromCurrentEnvironment(profileId, storedAuthData);
       await syncAuthFile(getResolvedActiveAuthPath(), authData);
+      await syncCapSidFile(getResolvedCapSidPath(), authData.capSid);
       if (authData.codexConfigText) {
         await syncCodexConfigFile(getResolvedCodexConfigPath(), authData.codexConfigText);
       }
@@ -485,12 +522,14 @@ export class ProfileStore {
       return;
     }
 
-    const authData = await this.loadAuthData(activeProfileId);
-    if (!authData) {
+    const storedAuthData = await this.loadAuthData(activeProfileId);
+    if (!storedAuthData) {
       return;
     }
+    const authData = await this.maybeHydrateCapSidFromCurrentEnvironment(activeProfileId, storedAuthData);
 
     await syncAuthFile(getResolvedActiveAuthPath(), authData);
+    await syncCapSidFile(getResolvedCapSidPath(), authData.capSid);
     if (authData.codexConfigText) {
       await syncCodexConfigFile(getResolvedCodexConfigPath(), authData.codexConfigText);
     }
@@ -622,6 +661,7 @@ export class ProfileStore {
       throw new Error(`Could not read auth from ${getResolvedActiveAuthPath()}.`);
     }
     authData.codexConfigText = await loadCodexConfigText();
+    authData.capSid = await loadCapSidText();
 
     const duplicate = await this.findDuplicateProfile(authData);
     if (duplicate) {

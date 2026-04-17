@@ -76,6 +76,7 @@ And when you want to check usage:
 
 - Import the current `auth.json` as a saved profile.
 - Import an auth file manually.
+- Imports keep your current active profile selected unless you are setting up your first saved profile.
 - Log in with Codex CLI and save the result as a profile.
 - Keep separate saved profiles for different effective contexts on the same OpenAI login, including personal and Team-style Codex contexts.
 - Rename profiles.

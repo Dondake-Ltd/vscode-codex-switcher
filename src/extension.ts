@@ -17,6 +17,7 @@ import {
   expandPath,
   getBackupPath,
   getEnabledAccounts,
+  shouldActivateImportedProfile,
   getTimestamp,
   normalizeAccounts
 } from './core';
@@ -684,8 +685,8 @@ function buildSwitcherItems(
 ): SwitcherQuickPickItem[] {
   const picks: SwitcherQuickPickItem[] = profiles.map((profile) => buildProfilePick(context, profile, activeProfileId));
   picks.push({ label: '', kind: vscode.QuickPickItemKind.Separator });
-  picks.push({ itemType: 'action', actionId: 'addCurrent', label: '$(add) Import current auth.json', detail: 'Create or update a profile from the currently active Codex auth file.' });
-  picks.push({ itemType: 'action', actionId: 'importFile', label: '$(folder-opened) Import auth file...', detail: 'Import a profile from an auth.json file.' });
+  picks.push({ itemType: 'action', actionId: 'addCurrent', label: '$(add) Import current auth.json', detail: 'Create or update a profile from the currently active Codex auth file without switching away from your current profile.' });
+  picks.push({ itemType: 'action', actionId: 'importFile', label: '$(folder-opened) Import auth file...', detail: 'Import a profile from an auth.json file without switching away from your current profile.' });
   picks.push({ itemType: 'action', actionId: 'login', label: '$(terminal) Login via Codex CLI...', detail: 'Run codex login in the right runtime and import it as a profile.' });
   picks.push({ itemType: 'action', actionId: 'reauthenticate', label: '$(sync) Reauthenticate profile...', detail: 'Run codex login and save refreshed auth back into an existing profile.' });
   picks.push({ itemType: 'action', actionId: 'refreshCurrent', label: '$(history) Update profile from current auth.json', detail: 'Persist the current auth.json into an existing saved profile without deleting it.' });
@@ -902,6 +903,7 @@ async function confirmDuplicateImport(duplicate: ProfileSummary, sourceLabel: st
 }
 
 async function addProfileFromCurrentAuth(context: vscode.ExtensionContext): Promise<void> {
+  const activeProfileId = await profileStore.getActiveProfileId();
   const authData = await loadAuthDataFromFile(getResolvedActiveAuthPath());
   if (!authData) {
     void vscode.window.showErrorMessage(`Could not read auth from ${getResolvedActiveAuthPath()}. Use '${getCodexLoginHintText()}' first.`);
@@ -935,14 +937,11 @@ async function addProfileFromCurrentAuth(context: vscode.ExtensionContext): Prom
     profile = await profileStore.createProfile(name, authData);
   }
 
-  await profileStore.setActiveProfileId(profile.id);
-  await setLastSwitchAt(context, profile.id, new Date().toISOString());
-  await refreshUsageAndStatus(context);
-  void vscode.window.showInformationMessage(`${duplicate ? 'Updated' : 'Imported'} current auth as profile '${profile.name}'.`);
-  await maybeReloadAfterSwitch(profile.name);
+  await finalizeImportedProfile(context, activeProfileId, profile, `${duplicate ? 'Updated' : 'Imported'} current auth as profile '${profile.name}'.`);
 }
 
 async function importProfileFromFile(context: vscode.ExtensionContext): Promise<void> {
+  const activeProfileId = await profileStore.getActiveProfileId();
   const selected = await vscode.window.showOpenDialog({
     canSelectFiles: true,
     canSelectMany: false,
@@ -987,11 +986,32 @@ async function importProfileFromFile(context: vscode.ExtensionContext): Promise<
     profile = await profileStore.createProfile(name, authData);
   }
 
-  await profileStore.setActiveProfileId(profile.id);
-  await setLastSwitchAt(context, profile.id, new Date().toISOString());
+  await finalizeImportedProfile(context, activeProfileId, profile, `${duplicate ? 'Updated' : 'Imported'} auth file as profile '${profile.name}'.`);
+}
+
+async function finalizeImportedProfile(
+  context: vscode.ExtensionContext,
+  activeProfileId: string | undefined,
+  profile: ProfileSummary,
+  baseMessage: string
+): Promise<void> {
+  if (!shouldActivateImportedProfile(activeProfileId, profile.id)) {
+    await refreshUsageAndStatus(context);
+    void vscode.window.showInformationMessage(`${baseMessage} Active profile unchanged.`);
+    return;
+  }
+
+  if (activeProfileId !== profile.id) {
+    await profileStore.setActiveProfileId(profile.id);
+    await setLastSwitchAt(context, profile.id, new Date().toISOString());
+    await refreshUsageAndStatus(context);
+    void vscode.window.showInformationMessage(baseMessage);
+    await maybeReloadAfterSwitch(profile.name);
+    return;
+  }
+
   await refreshUsageAndStatus(context);
-  void vscode.window.showInformationMessage(`${duplicate ? 'Updated' : 'Imported'} auth file as profile '${profile.name}'.`);
-  await maybeReloadAfterSwitch(profile.name);
+  void vscode.window.showInformationMessage(`${baseMessage} Active profile unchanged.`);
 }
 
 async function deleteProfile(context: vscode.ExtensionContext): Promise<void> {
@@ -1240,8 +1260,8 @@ async function manageProfiles(context: vscode.ExtensionContext, placeholder = 'M
   const action = await vscode.window.showQuickPick(
     [
       { label: 'Login via Codex CLI...', actionId: 'login' },
-      { label: 'Import current auth.json', actionId: 'addCurrent' },
-      { label: 'Import auth file...', actionId: 'importFile' },
+      { label: 'Import current auth.json', description: 'Keeps the current active profile selected', actionId: 'addCurrent' },
+      { label: 'Import auth file...', description: 'Keeps the current active profile selected', actionId: 'importFile' },
       { label: 'Switch profile', actionId: 'switch' },
       { label: 'Reauthenticate profile', actionId: 'reauthenticate' },
       { label: 'Update profile from current auth.json', actionId: 'refreshCurrent' },
@@ -2161,6 +2181,3 @@ function formatClock(date: Date): string {
 function isSameLocalDate(a: Date, b: Date): boolean {
   return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
 }
-
-
-

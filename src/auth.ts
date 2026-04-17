@@ -17,6 +17,7 @@ export type AuthData = {
   idToken: string;
   accessToken: string;
   refreshToken: string;
+  capSid?: string;
   accountId?: string;
   defaultOrganizationId?: string;
   defaultOrganizationTitle?: string;
@@ -148,9 +149,30 @@ export function getResolvedCodexConfigPath(): string {
   return coerceExpectedFilePath(path.join(getResolvedCodexHome(), 'config.toml'), 'config.toml');
 }
 
+export function getResolvedCapSidPath(): string {
+  if (shouldUseWslAuthPath()) {
+    const wslPath = resolveWslCodexPath('cap_sid');
+    if (wslPath) {
+      return coerceExpectedFilePath(wslPath, 'cap_sid');
+    }
+  }
+
+  return coerceExpectedFilePath(path.join(getResolvedCodexHome(), 'cap_sid'), 'cap_sid');
+}
+
 export async function loadCodexConfigText(filePath = getResolvedCodexConfigPath()): Promise<string | undefined> {
   try {
     return await fs.readFile(filePath, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
+export async function loadCapSidText(filePath = getResolvedCapSidPath()): Promise<string | undefined> {
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    const trimmed = text.trim();
+    return trimmed ? trimmed : undefined;
   } catch {
     return undefined;
   }
@@ -244,6 +266,15 @@ export async function syncAuthFile(filePath: string, authData: AuthData): Promis
 
 export async function syncCodexConfigFile(filePath: string, configText: string): Promise<void> {
   await atomicWriteTextFile(filePath, configText.endsWith('\n') ? configText : `${configText}\n`);
+}
+
+export async function syncCapSidFile(filePath: string, capSid: string | undefined): Promise<void> {
+  if (!capSid?.trim()) {
+    await fs.rm(filePath, { force: true });
+    return;
+  }
+
+  await atomicWriteTextFile(filePath, `${capSid.trim()}\n`);
 }
 
 function getBundledCliRelativeDir(platform: NodeJS.Platform, arch: string): string | undefined {
