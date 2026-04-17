@@ -28,8 +28,12 @@ Civilization advances. Next stop: Mars.
 - A clean status bar switcher for jumping between Codex accounts/profiles.
 - A separate usage monitor so you can see your remaining 5-hour and weekly allowance at a glance.
 - A detailed usage view with charts, reset times, token usage, and profile comparison.
+- Optional experimental web usage probing with explicit opt-in and graceful fallback to the supported refresh paths.
 - Saved Codex profiles you can rename, delete, export, import, refresh, and reauthenticate.
+- Optional masking for profile names and email addresses in the UI when you are screen sharing or streaming.
 - Recovery tools for the inevitable moment when a token decides it no longer believes in tomorrow.
+- Optional safety checks that warn before switching while Codex appears busy, with an opt-out setting if you prefer manual control.
+- Optional workspace-aware profile prompts so repos can nudge you toward the profile they usually use, with a global off switch if that gets annoying.
 - Support for local setups, WSL setups, and remote/SSH workflows.
 
 ## The Fun Part
@@ -62,6 +66,7 @@ And when you want to check usage:
 - Get a richer hover tooltip with reset timing and token usage.
 - Open the full **Codex Usage** panel for comparison and history.
 - If no fresh usage data exists yet, the extension says `Unknown` instead of pretending you still have plenty left.
+- When the active profile is nearly out of usage, optionally ask to switch to another profile with a recent cached usage snapshot that still has capacity.
 
 ### Codex Usage Details Panel
 
@@ -70,18 +75,22 @@ And when you want to check usage:
 - One-click **Switch Now** action from the compare panel.
 - Daily, weekly, monthly, and yearly history ranges.
 - Charts for per-profile usage history.
+- Usage History charts with visible percentage scales and hoverable data points for recorded timestamps and token context.
 - Reset timing and token usage details without cluttering the status bar.
 
 ### Profile Management
 
 - Import the current `auth.json` as a saved profile.
 - Import an auth file manually.
-- Imports keep your current active profile selected unless you are setting up your first saved profile.
+- Choose what happens after import/link:
+  - ask whether to switch
+  - switch immediately
+  - keep your current active profile
 - Log in with Codex CLI and save the result as a profile.
 - Keep separate saved profiles for different effective contexts on the same OpenAI login, including personal and Team-style Codex contexts.
 - Rename profiles.
 - Delete profiles.
-- Export/import profiles for backup or transfer.
+- Export/import profiles for backup or transfer, with encrypted exports recommended and plain JSON still available when you need it.
 - Reauthenticate a profile when tokens expire.
 - Refresh a saved profile from the current auth without deleting and rebuilding it.
 
@@ -128,13 +137,24 @@ Most useful ones:
 - `storageMode`: choose how saved profiles are stored.
 - `statusBarSide`: put the switcher on the left or right.
 - `confirmBeforeSwitch`: add a confirmation step before switching.
+- `processSafetyChecksEnabled`: warn before switching while Codex appears active and suppress low-usage auto-switching while live Codex processes are detected.
 - `showUsageInStatusBar`: show/hide the usage monitor item.
 - `showUsageInSwitcher`: show/hide usage inside the picker.
+- `maskProfileNames`: hide saved profile names in status bar text, pickers, tooltips, dialogs, the usage panel, and diagnostics.
+- `maskProfileEmails`: hide saved profile email addresses in those same UI surfaces.
 - `usagePercentDisplay`: choose `remaining` or `used` percentages.
+- `usageSourceMode`: choose `auto`, `appServerOnly`, or `localOnly` usage refresh behavior.
+- `experimentalWebUsageProbeEnabled`: opt into an undocumented ChatGPT web usage probe; if it fails, the extension falls back to the supported app-server and local session sources.
+- `workspaceProfilePromptsEnabled`: let the extension remember a preferred profile for the current repo/workspace and suggest switching when that workspace usually uses a different profile.
 - `usageColorsEnabled`: enable colored usage indicators.
 - `usageWarningColor` / `usageCriticalColor`: optional overrides for the warning/critical colors; leave unset for theme-aware defaults.
 - `usageRefreshIntervalSeconds`: control how often usage refreshes while VS Code is open.
+- `lowUsageProfileSwitchBehavior`: `off`, `ask`, or `auto` when the active profile is nearly exhausted and another profile has recent cached availability.
+- `lowUsageSwitchThresholdPercent`: how low “nearly exhausted” means.
+- `lowUsageCandidateFreshnessSeconds`: how recent another profile’s cached usage must be before it is considered switch-safe.
+- `lowUsageAutoSwitchCountdownSeconds`: countdown length before `auto` mode switches.
 - `reloadTarget`: choose extension-host restart or full window reload behavior.
+- `importProfileSwitchBehavior`: choose whether imported/linked profiles switch immediately, never switch, or ask first.
 
 Example:
 
@@ -144,11 +164,36 @@ Example:
   "codexAccountSwitcher.statusBarSide": "right",
   "codexAccountSwitcher.showUsageInStatusBar": true,
   "codexAccountSwitcher.showUsageInSwitcher": true,
+  "codexAccountSwitcher.processSafetyChecksEnabled": true,
+  "codexAccountSwitcher.maskProfileNames": false,
+  "codexAccountSwitcher.maskProfileEmails": false,
   "codexAccountSwitcher.usagePercentDisplay": "remaining",
+  "codexAccountSwitcher.usageSourceMode": "auto",
+  "codexAccountSwitcher.experimentalWebUsageProbeEnabled": false,
   "codexAccountSwitcher.usageColorsEnabled": true,
-  "codexAccountSwitcher.usageRefreshIntervalSeconds": 30
+  "codexAccountSwitcher.usageRefreshIntervalSeconds": 30,
+  "codexAccountSwitcher.lowUsageProfileSwitchBehavior": "ask"
 }
 ```
+
+Usage and refresh tooltips now also show the last refresh outcome, so you can tell whether a refresh fetched newer data, found no newer data, or returned no usage at all.
+
+If you enable the experimental web usage probe, the extension tries that undocumented source first and then degrades back to the supported app-server/session-file path when the web probe fails or stops returning valid data.
+
+Profile exports now let you choose between:
+- `Encrypted (Recommended)`: prompts for a passphrase before writing the export file.
+- `Plain JSON`: skips encryption when you explicitly need an unencrypted backup.
+
+Older plain JSON exports can still be imported for compatibility, and encrypted exports require the matching passphrase on import.
+
+You can also manually refresh active-profile usage from:
+- the status bar refresh item
+- the switcher/manage menus
+- the `Refresh Now` button in the usage details panel
+
+If saved profile metadata ever gets out of sync with the underlying stored profile secrets, use `Repair saved profiles` to rebuild the valid profile list and clear broken active/last-profile references.
+
+Use `Open diagnostics` when you need a single place to inspect resolved Codex paths, storage mode, usage source mode, watcher state, CLI resolution, the last refresh result, and health warnings with suggested next steps.
 
 ## Security
 
@@ -177,6 +222,7 @@ Dondake Ltd was formed by the longtime friends behind Cyprus Comic Con, a non-pr
 - The active profile updates live as new usage data appears.
 - Per-profile usage history is retained so the details panel can chart it over time.
 - WSL and remote/SSH setups are supported.
+- Low-usage switch suggestions only consider other profiles whose cached usage data is recent enough; the extension does not invent capacity for profiles it has not seen recently.
 
 ## Development
 

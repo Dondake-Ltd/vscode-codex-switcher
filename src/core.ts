@@ -15,6 +15,23 @@ export type ResolveContext = {
   envUserProfile?: string;
 };
 
+export type ImportProfileSwitchBehavior = 'ask' | 'always' | 'never';
+
+export type ImportProfileActivationDecision = 'activate' | 'keep' | 'ask';
+
+export type UsageWindowLike = {
+  usedPercent: number;
+  resetsAt: string;
+};
+
+export type LowUsageCandidateInput<T> = {
+  item: T;
+  recordedAt: string;
+  remainingPercent?: number;
+};
+
+export type WorkspaceProfilePromptDecision = 'prompt' | 'skip';
+
 export function normalizeAccounts(raw: unknown): AccountConfig[] {
   if (!Array.isArray(raw)) {
     return [];
@@ -35,6 +52,60 @@ export function getEnabledAccounts(accounts: AccountConfig[]): AccountConfig[] {
 
 export function shouldActivateImportedProfile(activeProfileId: string | undefined, importedProfileId: string): boolean {
   return !activeProfileId || activeProfileId === importedProfileId;
+}
+
+export function getImportProfileActivationDecision(
+  activeProfileId: string | undefined,
+  importedProfileId: string,
+  behavior: ImportProfileSwitchBehavior
+): ImportProfileActivationDecision {
+  if (!shouldActivateImportedProfile(activeProfileId, importedProfileId)) {
+    return 'keep';
+  }
+
+  if (activeProfileId === importedProfileId) {
+    return 'keep';
+  }
+
+  if (behavior === 'always') {
+    return 'activate';
+  }
+
+  if (behavior === 'never') {
+    return 'keep';
+  }
+
+  return 'ask';
+}
+
+export function getMinimumRemainingPercentForWindows(
+  windows: UsageWindowLike[],
+  nowMs = Date.now()
+): number | undefined {
+  const validWindows = windows.filter((window) => Date.parse(window.resetsAt) > nowMs);
+  if (!validWindows.length) {
+    return undefined;
+  }
+
+  return validWindows.reduce((min, window) => Math.min(min, 100 - window.usedPercent), 100);
+}
+
+export function pickLowUsageCandidate<T>(
+  candidates: LowUsageCandidateInput<T>[],
+  thresholdPercent: number,
+  freshnessMs: number,
+  nowMs = Date.now()
+): LowUsageCandidateInput<T> | undefined {
+  return candidates
+    .filter((candidate) => {
+      const recordedAtMs = Date.parse(candidate.recordedAt);
+      if (!Number.isFinite(recordedAtMs) || nowMs - recordedAtMs > freshnessMs) {
+        return false;
+      }
+
+      return candidate.remainingPercent !== undefined && candidate.remainingPercent > thresholdPercent;
+    })
+    .sort((left, right) => (right.remainingPercent ?? -1) - (left.remainingPercent ?? -1))[0];
 }
 
 export function resolveCodexHome(ctx: ResolveContext): string {
@@ -122,4 +193,54 @@ export function validateJsonObjectText(content: string): { valid: true } | { val
   } catch (error) {
     return { valid: false, reason: error instanceof Error ? error.message : 'Unknown parse error' };
   }
+}
+
+export function normalizeOptionalTextFileContent(content: string | undefined): string | undefined {
+  if (!content?.trim()) {
+    return undefined;
+  }
+
+  return content.endsWith('\n') ? content : `${content}\n`;
+}
+
+export function getWorkspaceProfileSwitchPromptDecision(options: {
+  promptsEnabled: boolean;
+  workspaceKey?: string;
+  preferredProfileId?: string;
+  activeProfileId?: string;
+  suppressedForWorkspace?: boolean;
+  alreadyPromptedThisSession?: boolean;
+}): WorkspaceProfilePromptDecision {
+  if (!options.promptsEnabled || !options.workspaceKey || !options.preferredProfileId || !options.activeProfileId) {
+    return 'skip';
+  }
+
+  if (options.preferredProfileId === options.activeProfileId) {
+    return 'skip';
+  }
+
+  if (options.suppressedForWorkspace || options.alreadyPromptedThisSession) {
+    return 'skip';
+  }
+
+  return 'prompt';
+}
+
+export function shouldOfferRememberWorkspaceProfile(options: {
+  promptsEnabled: boolean;
+  workspaceKey?: string;
+  activeProfileId?: string;
+  preferredProfileId?: string;
+  suppressedForWorkspace?: boolean;
+  alreadyPromptedThisSession?: boolean;
+}): boolean {
+  if (!options.promptsEnabled || !options.workspaceKey || !options.activeProfileId) {
+    return false;
+  }
+
+  if (options.suppressedForWorkspace || options.alreadyPromptedThisSession) {
+    return false;
+  }
+
+  return options.preferredProfileId !== options.activeProfileId;
 }

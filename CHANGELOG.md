@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [Unreleased]
+
+## [0.3.0] - 2026-04-17
+
+### Changed
+- Added optional UI masking for saved profile names and email addresses so status bar text, pickers, tooltips, dialogs, the usage details panel, and diagnostics can hide account identity without changing stored profile data.
+- Added clearer post-switch verification signals so the status bar and tooltip show when a profile switch is still pending reload, and the extension confirms once that switch has been applied after reload.
+- Added optional process-safety checks that warn before switching while Codex appears active and suppress low-usage auto-switches until Codex no longer looks busy. A new setting allows disabling those checks when needed.
+- Added an opt-in experimental web usage probe with one-time startup consent. It uses undocumented ChatGPT web endpoints, clearly labels that source in the UI, and falls back to the supported app-server and local session usage paths when the web probe fails.
+- Surfaced usage provenance more consistently across the UI so the switcher and usage details panel now show source labels plus refresh outcomes such as no newer data, no usage returned, or pre-switch cached snapshots.
+- Expanded the Usage History panel with clearer axis labeling, background severity bands, richer hover detail, sample counts, latest-source stats, and a recent-samples table so historical usage snapshots are easier to inspect directly.
+- Profile export/import now supports passphrase-encrypted transfer files with `Encrypted (Recommended)` and `Plain JSON` export modes, while still accepting older plain JSON exports for backward compatibility.
+- Added workspace-aware preferred-profile prompts that can remember a repo/workspace's usual profile, suggest switching when the current active profile does not match, and can be disabled globally with a new setting.
+- Importing or linking a profile now defaults to asking whether you want to switch to it, with a new setting to choose `ask`, `always`, or `never`. Thanks [@Encryption-c08](https://github.com/Encryption-c08) for requesting this in [#11](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/11).
+- Added low-usage profile switch assistance with `off` / `ask` / `auto` modes, using only recent cached usage data from other profiles before suggesting or countdown-switching away from a nearly exhausted active profile. Thanks [@Encryption-c08](https://github.com/Encryption-c08) for requesting this in [#10](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/10).
+- Expanded the Usage History chart with visible percentage axes and hoverable data points that show recorded time plus token usage context where available. Thanks [@tsenturion](https://github.com/tsenturion) for requesting this in [#12](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/12).
+
+## [0.2.16] - 2026-04-17
+
+### Fixed
+- Switching profiles now clears stale `config.toml` when the target profile has no saved Codex config snapshot, and older active profiles can hydrate missing config from the current environment on upgrade instead of inheriting the previous profile's config.
+
+### Changed
+- Added a `usageSourceMode` setting so usage refresh can be forced to `auto`, `appServerOnly`, or `localOnly` instead of always following the built-in source order.
+- Improved usage refresh diagnostics in the tooltips so they now report whether the last refresh fetched newer data, found no newer data, or returned no usage data, along with the active source mode.
+- Added more manual refresh entry points for the active profile, including the switcher/manage flows and a `Refresh Now` button in the usage details panel.
+- Added `Repair saved profiles` to rebuild the valid profile list from stored profile secrets and repair broken active/last-profile references when metadata drifts out of sync.
+- Added `Open diagnostics` to show resolved Codex paths, storage mode, usage source mode, watcher state, CLI resolution, and the last refresh result in one panel.
+- Expanded diagnostics with derived health warnings and suggested remediation steps for common path, storage-mode, WSL, watcher, and usage-source problems.
+- Added regression coverage for import switch policy decisions and low-usage candidate selection logic.
+
 ## [0.2.15] - 2026-04-17
 
 ### Fixed

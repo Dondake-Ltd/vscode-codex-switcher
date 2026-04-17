@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import * as vscode from 'vscode';
 import { execFileSync } from 'child_process';
-import { coerceExpectedFilePath, resolveCodexHome, validateJsonObjectText } from './core';
+import { coerceExpectedFilePath, normalizeOptionalTextFileContent, resolveCodexHome, validateJsonObjectText } from './core';
 
 export type CodexCliLaunchSpec = {
   shellPath: string;
@@ -264,8 +264,14 @@ export async function syncAuthFile(filePath: string, authData: AuthData): Promis
   await atomicWriteTextFile(filePath, buildAuthJsonText(authData));
 }
 
-export async function syncCodexConfigFile(filePath: string, configText: string): Promise<void> {
-  await atomicWriteTextFile(filePath, configText.endsWith('\n') ? configText : `${configText}\n`);
+export async function syncCodexConfigFile(filePath: string, configText: string | undefined): Promise<void> {
+  const normalized = normalizeOptionalTextFileContent(configText);
+  if (!normalized) {
+    await fs.rm(filePath, { force: true });
+    return;
+  }
+
+  await atomicWriteTextFile(filePath, normalized);
 }
 
 export async function syncCapSidFile(filePath: string, capSid: string | undefined): Promise<void> {

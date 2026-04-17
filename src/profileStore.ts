@@ -376,13 +376,8 @@ export class ProfileStore {
     };
   }
 
-  private async maybeHydrateCapSidFromCurrentEnvironment(profileId: string, authData: AuthData): Promise<AuthData> {
-    if (authData.capSid) {
-      return authData;
-    }
-
-    const currentCapSid = await loadCapSidText();
-    if (!currentCapSid) {
+  private async maybeHydrateAuthStateFromCurrentEnvironment(profileId: string, authData: AuthData): Promise<AuthData> {
+    if (authData.capSid && authData.codexConfigText?.trim()) {
       return authData;
     }
 
@@ -392,7 +387,14 @@ export class ProfileStore {
       return authData;
     }
 
-    const hydrated = { ...authData, capSid: currentCapSid };
+    const hydrated: AuthData = { ...authData };
+    if (!hydrated.capSid) {
+      hydrated.capSid = await loadCapSidText();
+    }
+    if (!hydrated.codexConfigText?.trim()) {
+      hydrated.codexConfigText = await loadCodexConfigText();
+    }
+
     await this.writeStoredSecret(profileId, this.buildStoredSecret(hydrated));
     return hydrated;
   }
@@ -490,12 +492,10 @@ export class ProfileStore {
       if (!storedAuthData) {
         return false;
       }
-      const authData = await this.maybeHydrateCapSidFromCurrentEnvironment(profileId, storedAuthData);
+      const authData = await this.maybeHydrateAuthStateFromCurrentEnvironment(profileId, storedAuthData);
       await syncAuthFile(getResolvedActiveAuthPath(), authData);
       await syncCapSidFile(getResolvedCapSidPath(), authData.capSid);
-      if (authData.codexConfigText) {
-        await syncCodexConfigFile(getResolvedCodexConfigPath(), authData.codexConfigText);
-      }
+      await syncCodexConfigFile(getResolvedCodexConfigPath(), authData.codexConfigText);
     }
 
     if (this.isRemoteFilesMode()) {
@@ -526,13 +526,11 @@ export class ProfileStore {
     if (!storedAuthData) {
       return;
     }
-    const authData = await this.maybeHydrateCapSidFromCurrentEnvironment(activeProfileId, storedAuthData);
+    const authData = await this.maybeHydrateAuthStateFromCurrentEnvironment(activeProfileId, storedAuthData);
 
     await syncAuthFile(getResolvedActiveAuthPath(), authData);
     await syncCapSidFile(getResolvedCapSidPath(), authData.capSid);
-    if (authData.codexConfigText) {
-      await syncCodexConfigFile(getResolvedCodexConfigPath(), authData.codexConfigText);
-    }
+    await syncCodexConfigFile(getResolvedCodexConfigPath(), authData.codexConfigText);
   }
 
   async exportProfiles(): Promise<ExportedTransfer> {
@@ -607,6 +605,52 @@ export class ProfileStore {
     }
 
     return { created, updated, skipped };
+  }
+
+  async repairProfiles(): Promise<{ kept: number; removed: number; repairedActiveProfile: boolean; repairedLastProfile: boolean }> {
+    const file = await this.readProfilesFile();
+    const originalProfiles = file.profiles;
+    const validProfiles: ProfileSummary[] = [];
+
+    for (const profile of originalProfiles) {
+      if (!profile || typeof profile !== 'object' || !asOptionalString(profile.id) || !asOptionalString(profile.name)) {
+        continue;
+      }
+
+      const secret = await this.readStoredSecret(profile.id);
+      if (!secret?.authJson || typeof secret.authJson !== 'object' || Array.isArray(secret.authJson)) {
+        continue;
+      }
+
+      validProfiles.push(profile);
+    }
+
+    file.profiles = validProfiles;
+    await this.writeProfilesFile(file);
+
+    const validIds = new Set(validProfiles.map((profile) => profile.id));
+    const activeProfileId = await this.getActiveProfileId();
+    const lastProfileId = await this.getLastProfileId();
+
+    let repairedActiveProfile = false;
+    let repairedLastProfile = false;
+
+    if (activeProfileId && !validIds.has(activeProfileId)) {
+      repairedActiveProfile = true;
+      await this.setActiveProfileId(validProfiles[0]?.id);
+    }
+
+    if (lastProfileId && !validIds.has(lastProfileId)) {
+      repairedLastProfile = true;
+      await this.context.globalState.update(LAST_PROFILE_KEY, undefined);
+    }
+
+    return {
+      kept: validProfiles.length,
+      removed: originalProfiles.length - validProfiles.length,
+      repairedActiveProfile,
+      repairedLastProfile
+    };
   }
 
   private async writeTemporaryImportFile(authJson: Record<string, unknown>): Promise<string> {
@@ -726,5 +770,17 @@ export class ProfileStore {
     }
 
     return disposables;
+  }
+
+  getEffectiveStorageMode(): Exclude<StorageMode, 'auto'> {
+    return this.getResolvedStorageMode();
+  }
+
+  getStorageRootPath(): string {
+    return this.getStorageDir();
+  }
+
+  getProfilesFilePath(): string {
+    return this.getProfilesPath();
   }
 }

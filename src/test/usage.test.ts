@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { getSessionsPath, normalizeAppServerUsageSnapshot, readLatestUsageSnapshot } from '../usage';
+import { getSessionsPath, normalizeAppServerUsageSnapshot, normalizeExperimentalWebUsageSnapshot, readLatestUsageSnapshot } from '../usage';
 
 async function makeTempCodexHome(): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), 'codex-switcher-usage-'));
@@ -147,5 +147,27 @@ test('normalizeAppServerUsageSnapshot maps account/rateLimits/read output', () =
   assert.equal(snapshot.primary?.usedPercent, 98);
   assert.equal(snapshot.primary?.windowMinutes, 300);
   assert.equal(snapshot.secondary?.usedPercent, 78);
+  assert.equal(snapshot.secondary?.windowMinutes, 10080);
+});
+
+test('normalizeExperimentalWebUsageSnapshot maps undocumented web usage output', () => {
+  const snapshot = normalizeExperimentalWebUsageSnapshot(
+    {
+      plan_type: 'plus',
+      rate_limit: {
+        primary_window: { used_percent: 61, limit_window_seconds: 18_000, reset_at: 1776191545 },
+        secondary_window: { used_percent: 22, limit_window_seconds: 604_800, reset_at: 1776438181 }
+      }
+    },
+    '2026-04-17T16:00:29.000Z'
+  );
+
+  assert.ok(snapshot);
+  assert.equal(snapshot.sourceFile, 'experimental web usage');
+  assert.equal(snapshot.recordedAt, '2026-04-17T16:00:29.000Z');
+  assert.equal(snapshot.planType, 'plus');
+  assert.equal(snapshot.primary?.usedPercent, 61);
+  assert.equal(snapshot.primary?.windowMinutes, 300);
+  assert.equal(snapshot.secondary?.usedPercent, 22);
   assert.equal(snapshot.secondary?.windowMinutes, 10080);
 });

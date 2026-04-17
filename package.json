@@ -2,7 +2,7 @@
     "name":  "vscode-codex-switcher",
     "displayName":  "Codex Account Switcher",
     "description":  "Switch Codex accounts and profiles from the status bar, store full auth payloads securely, preserve profile-specific state, and keep usage visible while you work.",
-    "version":  "0.2.15",
+    "version":  "0.3.0",
     "publisher":  "DondakeLtd",
     "license":  "MIT",
     "icon":  "assets/icon.png",
@@ -46,6 +46,8 @@
                              "onCommand:codexAccountSwitcher.updateProfileFromCurrentAuth",
                              "onCommand:codexAccountSwitcher.importProfiles",
                              "onCommand:codexAccountSwitcher.exportProfiles",
+                             "onCommand:codexAccountSwitcher.repairProfiles",
+                             "onCommand:codexAccountSwitcher.showDiagnostics",
                              "onCommand:codexAccountSwitcher.loginWithCodexCli",
                              "onCommand:codexAccountSwitcher.manageProfiles",
                              "onCommand:codexAccountSwitcher.showUsageDetails"
@@ -95,6 +97,14 @@
                                          {
                                              "command":  "codexAccountSwitcher.exportProfiles",
                                              "title":  "Codex Account Switcher: Export Profiles"
+                                         },
+                                         {
+                                             "command":  "codexAccountSwitcher.repairProfiles",
+                                             "title":  "Codex Account Switcher: Repair Saved Profiles"
+                                         },
+                                         {
+                                             "command":  "codexAccountSwitcher.showDiagnostics",
+                                             "title":  "Codex Account Switcher: Show Diagnostics"
                                          },
                                          {
                                              "command":  "codexAccountSwitcher.loginWithCodexCli",
@@ -176,6 +186,31 @@
                                                                                                                    "default":  false,
                                                                                                                    "description":  "Warn that account swapping requires file-based Codex credentials."
                                                                                                                },
+                                                                 "codexAccountSwitcher.processSafetyChecksEnabled":  {
+                                                                                                                      "type":  "boolean",
+                                                                                                                      "default":  true,
+                                                                                                                      "description":  "Warn before switching profiles when Codex appears to be running, and suppress low-usage auto-switching while Codex looks active."
+                                                                                                                  },
+                                                                 "codexAccountSwitcher.experimentalWebUsageProbeEnabled":  {
+                                                                                                                               "type":  "boolean",
+                                                                                                                               "default":  false,
+                                                                                                                               "description":  "Enable an experimental usage probe against undocumented ChatGPT web endpoints. When it fails, usage refresh falls back to the supported app-server and local session sources."
+                                                                                                                           },
+                                                                 "codexAccountSwitcher.workspaceProfilePromptsEnabled":  {
+                                                                                                                             "type":  "boolean",
+                                                                                                                             "default":  true,
+                                                                                                                             "description":  "Suggest switching to a preferred profile when a workspace/repository is usually associated with a different saved profile, and offer to remember profile choices per workspace."
+                                                                                                                         },
+                                                                 "codexAccountSwitcher.maskProfileNames":  {
+                                                                                                             "type":  "boolean",
+                                                                                                             "default":  false,
+                                                                                                             "description":  "Mask saved profile/account names in the UI without changing the stored profile data."
+                                                                                                         },
+                                                                 "codexAccountSwitcher.maskProfileEmails":  {
+                                                                                                              "type":  "boolean",
+                                                                                                              "default":  false,
+                                                                                                              "description":  "Mask profile email addresses in the UI without changing the stored profile data."
+                                                                                                          },
                                                                  "codexAccountSwitcher.reloadTarget":  {
                                                                                                            "type":  "string",
                                                                                                            "enum":  [
@@ -185,6 +220,45 @@
                                                                                                            "default":  "extensionHost",
                                                                                                            "markdownDescription":  "Reload strategy after switching: `extensionHost` (recommended, less disruptive) or full `window` reload."
                                                                                                        },
+                                                                 "codexAccountSwitcher.importProfileSwitchBehavior":  {
+                                                                                                                        "type":  "string",
+                                                                                                                        "enum":  [
+                                                                                                                                     "ask",
+                                                                                                                                     "always",
+                                                                                                                                     "never"
+                                                                                                                                 ],
+                                                                                                                        "default":  "ask",
+                                                                                                                        "markdownDescription":  "What to do after importing or linking a profile: `ask` whether to switch, `always` switch immediately, or `never` keep the current active profile."
+                                                                                                                    },
+                                                                 "codexAccountSwitcher.lowUsageProfileSwitchBehavior":  {
+                                                                                                                            "type":  "string",
+                                                                                                                            "enum":  [
+                                                                                                                                         "off",
+                                                                                                                                         "ask",
+                                                                                                                                         "auto"
+                                                                                                                                     ],
+                                                                                                                            "default":  "ask",
+                                                                                                                            "markdownDescription":  "What to do when the active profile is nearly out of usage and another profile has a recent cached usage snapshot with more capacity: `off`, `ask`, or `auto`."
+                                                                                                                        },
+                                                                 "codexAccountSwitcher.lowUsageSwitchThresholdPercent":  {
+                                                                                                                              "type":  "number",
+                                                                                                                              "default":  5,
+                                                                                                                              "minimum":  0,
+                                                                                                                              "maximum":  100,
+                                                                                                                              "description":  "Remaining usage percentage threshold at or below which the extension suggests switching to another profile."
+                                                                                                                          },
+                                                                 "codexAccountSwitcher.lowUsageCandidateFreshnessSeconds":  {
+                                                                                                                                "type":  "number",
+                                                                                                                                "default":  600,
+                                                                                                                                "minimum":  30,
+                                                                                                                                "description":  "How recent another profile's cached usage data must be before it is considered a safe switch candidate."
+                                                                                                                            },
+                                                                 "codexAccountSwitcher.lowUsageAutoSwitchCountdownSeconds":  {
+                                                                                                                                  "type":  "number",
+                                                                                                                                  "default":  10,
+                                                                                                                                  "minimum":  3,
+                                                                                                                                  "description":  "Countdown length before auto-switch executes in `lowUsageProfileSwitchBehavior = auto` mode."
+                                                                                                                              },
                                                                  "codexAccountSwitcher.showUsageInStatusBar":  {
                                                                                                                    "type":  "boolean",
                                                                                                                    "default":  true,
@@ -239,6 +313,16 @@
                                                                                                                           "minimum":  15,
                                                                                                                           "description":  "How often to refresh Codex rate-limit usage while VS Code is open. Live app-server data is preferred, with local session files as fallback."
                                                                                                                       },
+                                                                 "codexAccountSwitcher.usageSourceMode":  {
+                                                                                                               "type":  "string",
+                                                                                                               "enum":  [
+                                                                                                                            "auto",
+                                                                                                                            "appServerOnly",
+                                                                                                                            "localOnly"
+                                                                                                                        ],
+                                                                                                               "default":  "auto",
+                                                                                                               "markdownDescription":  "Where usage refresh reads from: `auto` prefers Codex app-server and falls back to local session files, `appServerOnly` uses only Codex app-server, and `localOnly` skips app-server and reads only local session files. If `experimentalWebUsageProbeEnabled` is on, the extension tries the experimental web probe before the configured supported sources unless you have chosen `localOnly`."
+                                                                                                           },
                                                                  "codexAccountSwitcher.statusBarSide":  {
                                                                                                             "type":  "string",
                                                                                                             "enum":  [
@@ -264,7 +348,7 @@
                     "vscode:prepublish":  "npm run compile",
                     "compile":  "tsc -p ./",
                     "watch":  "tsc -watch -p ./",
-                    "test:unit":  "npm run compile \u0026\u0026 node --test out/test/auth.test.js out/test/core.test.js out/test/usage.test.js",
+                    "test:unit":  "npm run compile \u0026\u0026 node --test out/test/auth.test.js out/test/core.test.js out/test/usage.test.js out/test/transferCrypto.test.js",
                     "test:integration":  "npm run compile \u0026\u0026 node .vscode-test.mjs",
                     "test:all":  "npm run test:unit \u0026\u0026 npm run test:integration",
                     "test":  "npm run test:unit",

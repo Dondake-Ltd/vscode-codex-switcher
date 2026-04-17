@@ -29,6 +29,13 @@ export type UsageSnapshot = {
   lastUsage?: TokenUsage;
 };
 
+export type UsageSourceMode = 'auto' | 'appServerOnly' | 'localOnly';
+export type UsageReadOptions = {
+  experimentalWebProbeEnabled?: boolean;
+  webAccessToken?: string;
+  webAccountId?: string;
+};
+
 type SessionEntry = {
   timestamp?: string;
   type?: string;
@@ -98,11 +105,42 @@ type AppServerRateLimitsResult = {
   rateLimitsByLimitId?: Record<string, AppServerRateLimitSnapshot> | null;
 };
 
+type ExperimentalWebUsageWindow = {
+  used_percent?: number | null;
+  usedPercent?: number | null;
+  limit_window_seconds?: number | null;
+  limitWindowSeconds?: number | null;
+  reset_at?: number | null;
+  resetAt?: number | null;
+};
+
+type ExperimentalWebUsageResponse = {
+  plan_type?: string | null;
+  planType?: string | null;
+  rate_limit?: {
+    primary_window?: ExperimentalWebUsageWindow | null;
+    secondary_window?: ExperimentalWebUsageWindow | null;
+    primaryWindow?: ExperimentalWebUsageWindow | null;
+    secondaryWindow?: ExperimentalWebUsageWindow | null;
+  } | null;
+  rateLimit?: {
+    primary_window?: ExperimentalWebUsageWindow | null;
+    secondary_window?: ExperimentalWebUsageWindow | null;
+    primaryWindow?: ExperimentalWebUsageWindow | null;
+    secondaryWindow?: ExperimentalWebUsageWindow | null;
+  } | null;
+};
+
 const MAX_CANDIDATE_FILES = 40;
 const APP_SERVER_TIMEOUT_MS = 4000;
+const EXPERIMENTAL_WEB_TIMEOUT_MS = 4000;
 const APP_SERVER_INIT_REQUEST_ID = 1;
 const APP_SERVER_RATE_LIMITS_REQUEST_ID = 2;
 const RECENT_SESSION_WINDOW_MS = 60 * 60 * 1000;
+const EXPERIMENTAL_WEB_USAGE_ENDPOINTS = [
+  'https://chatgpt.com/backend-api/codex/usage',
+  'https://chatgpt.com/backend-api/wham/usage'
+];
 
 let sessionTailState: SessionTailState | undefined;
 
@@ -110,10 +148,27 @@ export function getSessionsPath(codexHome: string): string {
   return path.join(codexHome, 'sessions');
 }
 
-export async function readCurrentUsageSnapshot(codexHome: string): Promise<UsageSnapshot | undefined> {
-  const liveSnapshot = await readUsageSnapshotFromAppServer();
-  if (liveSnapshot) {
-    return liveSnapshot;
+export async function readCurrentUsageSnapshot(
+  codexHome: string,
+  sourceMode: UsageSourceMode = 'auto',
+  options: UsageReadOptions = {}
+): Promise<UsageSnapshot | undefined> {
+  if (options.experimentalWebProbeEnabled && sourceMode !== 'localOnly') {
+    const experimentalWebSnapshot = await readUsageSnapshotFromExperimentalWeb(options.webAccessToken, options.webAccountId);
+    if (experimentalWebSnapshot) {
+      return experimentalWebSnapshot;
+    }
+  }
+
+  if (sourceMode !== 'localOnly') {
+    const liveSnapshot = await readUsageSnapshotFromAppServer();
+    if (liveSnapshot) {
+      return liveSnapshot;
+    }
+
+    if (sourceMode === 'appServerOnly') {
+      return undefined;
+    }
   }
 
   return readLatestUsageSnapshot(codexHome);
@@ -161,6 +216,30 @@ export function normalizeAppServerUsageSnapshot(result: AppServerRateLimitsResul
     sourceFile: 'codex app-server',
     planType: asNonEmptyString(rateLimits.planType ?? undefined),
     limitId: asNonEmptyString(rateLimits.limitId ?? undefined),
+    primary,
+    secondary
+  };
+}
+
+export function normalizeExperimentalWebUsageSnapshot(
+  result: ExperimentalWebUsageResponse,
+  recordedAt = new Date().toISOString()
+): UsageSnapshot | undefined {
+  const rateLimit = result.rate_limit ?? result.rateLimit;
+  if (!rateLimit) {
+    return undefined;
+  }
+
+  const primary = toExperimentalWebUsageWindow(rateLimit.primary_window ?? rateLimit.primaryWindow);
+  const secondary = toExperimentalWebUsageWindow(rateLimit.secondary_window ?? rateLimit.secondaryWindow);
+  if (!primary && !secondary) {
+    return undefined;
+  }
+
+  return {
+    recordedAt,
+    sourceFile: 'experimental web usage',
+    planType: asNonEmptyString(result.plan_type ?? result.planType ?? undefined),
     primary,
     secondary
   };
@@ -358,6 +437,52 @@ async function readUsageSnapshotFromAppServer(): Promise<UsageSnapshot | undefin
   } catch {
     return undefined;
   }
+}
+
+async function readUsageSnapshotFromExperimentalWeb(
+  accessToken: string | undefined,
+  accountId: string | undefined
+): Promise<UsageSnapshot | undefined> {
+  if (!accessToken?.trim()) {
+    return undefined;
+  }
+
+  try {
+    for (const endpoint of EXPERIMENTAL_WEB_USAGE_ENDPOINTS) {
+      const response = await fetch(endpoint, {
+        method: 'GET',
+        headers: buildExperimentalWebHeaders(accessToken, accountId),
+        signal: AbortSignal.timeout(EXPERIMENTAL_WEB_TIMEOUT_MS)
+      });
+
+      if (!response.ok) {
+        continue;
+      }
+
+      const payload = await response.json() as ExperimentalWebUsageResponse;
+      const snapshot = normalizeExperimentalWebUsageSnapshot(payload);
+      if (snapshot) {
+        return snapshot;
+      }
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function buildExperimentalWebHeaders(accessToken: string, accountId: string | undefined): Record<string, string> {
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json'
+  };
+
+  if (accountId?.trim()) {
+    headers['ChatGPT-Account-Id'] = accountId.trim();
+  }
+
+  return headers;
 }
 
 function readUsageFromAppServerProcess(shellPath: string, shellArgs: string[]): Promise<AppServerRateLimitsResult> {
@@ -575,6 +700,38 @@ function toUsageWindow(raw: RawUsageWindow | AppServerRateLimitWindow | null | u
   return {
     usedPercent,
     windowMinutes,
+    resetsAt: new Date(resetsAt * 1000).toISOString()
+  };
+}
+
+function toExperimentalWebUsageWindow(raw: ExperimentalWebUsageWindow | null | undefined): UsageWindow | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  const usedPercent = typeof raw.used_percent === 'number'
+    ? raw.used_percent
+    : typeof raw.usedPercent === 'number'
+      ? raw.usedPercent
+      : undefined;
+  const limitWindowSeconds = typeof raw.limit_window_seconds === 'number'
+    ? raw.limit_window_seconds
+    : typeof raw.limitWindowSeconds === 'number'
+      ? raw.limitWindowSeconds
+      : undefined;
+  const resetsAt = typeof raw.reset_at === 'number'
+    ? raw.reset_at
+    : typeof raw.resetAt === 'number'
+      ? raw.resetAt
+      : undefined;
+
+  if (usedPercent === undefined || limitWindowSeconds === undefined || resetsAt === undefined) {
+    return undefined;
+  }
+
+  return {
+    usedPercent,
+    windowMinutes: Math.round(limitWindowSeconds / 60),
     resetsAt: new Date(resetsAt * 1000).toISOString()
   };
 }
