@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-04-19
+
+### Fixed
+- Rebuilt the Codex Usage Details panel so it now renders the full dashboard server-side instead of depending on a large client-side bootstrap script. This fixes the page getting stuck on `Loading usage details…` / `Loading comparison view…` while preserving the richer history dashboard requested by [@tsenturion](https://github.com/tsenturion) in [#12](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/12).
+- The usage details `History`, `Compare`, and `Refresh Now` controls now round-trip through the extension host and re-render the page with current data instead of trying to rebuild the whole dashboard inside the webview runtime.
+
+### Changed
+- Refined the rebuilt Codex Usage Details dashboard so the Usage History view better preserves the intent of [#12](https://github.com/Dondake-Ltd/vscode-codex-switcher/issues/12): chart points now align to real sample timing, the latest sample gets a richer context summary, and recent sample rows expose the same hover detail as the chart points without relying on heavier client-side rendering.
+
+## [0.3.3] - 2026-04-19
+
+### Fixed
+- Hardened the Codex Usage Details webview so malformed cached usage/history data no longer blanks the whole page. The panel now sanitizes invalid payload values before rendering and falls back to inline error/empty states instead of silently rendering only the header controls.
+- Replaced the usage-details webview script nonce with a proper random CSP nonce so the panel script can execute reliably instead of rendering only the static header shell.
+- Stopped inlining raw usage-panel JSON directly into the webview script, so profile/history data can no longer break script parsing and leave the page body blank. The details panel now ships a safe encoded payload plus visible loading/failure placeholders.
+- The experimental web usage prompt is now a one-time non-modal notification instead of a modal dialog, and the response is remembered across future activations and version updates.
+
 ## [0.3.0] - 2026-04-17
 
 ### Changed

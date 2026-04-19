@@ -2,6 +2,7 @@
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
@@ -87,6 +88,7 @@ const USAGE_HISTORY_KEY = 'usageHistoryByProfile';
 const LAST_SWITCH_AT_KEY = 'lastSwitchAtByProfile';
 const PENDING_SWITCH_APPLY_KEY = 'pendingSwitchApply';
 const EXPERIMENTAL_WEB_USAGE_OOBE_KEY = 'experimentalWebUsageProbeOobeCompleted';
+const EXPERIMENTAL_WEB_USAGE_PROMPT_STATE_KEY = 'experimentalWebUsageProbePromptState';
 const WORKSPACE_PROFILE_PREFERENCES_KEY = 'workspaceProfilePreferences';
 const WORKSPACE_PROFILE_SUPPRESSIONS_KEY = 'workspaceProfileSuppressions';
 const execFileAsync = promisify(execFile);
@@ -127,6 +129,7 @@ type PendingSwitchState = {
   requestedAt: string;
   reloadTarget: 'extensionHost' | 'window';
 };
+type ExperimentalWebUsagePromptState = 'enabled' | 'dismissed';
 type CodexProcessInfo = {
   pid: number;
   label: string;
@@ -446,26 +449,42 @@ function isExperimentalWebUsageProbeEnabled(): boolean {
   return getConfig().get<boolean>(EXPERIMENTAL_WEB_USAGE_PROBE_ENABLED_SETTING, false);
 }
 
+function getExperimentalWebUsagePromptState(context: vscode.ExtensionContext): ExperimentalWebUsagePromptState | undefined {
+  const state = context.globalState.get<ExperimentalWebUsagePromptState | undefined>(EXPERIMENTAL_WEB_USAGE_PROMPT_STATE_KEY);
+  if (state) {
+    return state;
+  }
+
+  return context.globalState.get<boolean>(EXPERIMENTAL_WEB_USAGE_OOBE_KEY, false) ? 'dismissed' : undefined;
+}
+
 async function maybeOfferExperimentalWebUsageProbe(context: vscode.ExtensionContext): Promise<void> {
-  if (context.globalState.get<boolean>(EXPERIMENTAL_WEB_USAGE_OOBE_KEY, false) || isExperimentalWebUsageProbeEnabled()) {
+  if (isExperimentalWebUsageProbeEnabled()) {
+    if (getExperimentalWebUsagePromptState(context) !== 'enabled') {
+      await context.globalState.update(EXPERIMENTAL_WEB_USAGE_PROMPT_STATE_KEY, 'enabled');
+    }
     return;
   }
 
-  const choice = await vscode.window.showWarningMessage(
-    'Enable the experimental web usage probe? This uses undocumented ChatGPT web endpoints that may change or break without notice. When it fails, the extension falls back to the supported app-server and local session usage sources.',
-    { modal: true },
+  if (getExperimentalWebUsagePromptState(context)) {
+    return;
+  }
+
+  const choice = await vscode.window.showInformationMessage(
+    'Try the experimental web usage probe? It uses undocumented ChatGPT web endpoints that may break, and the extension falls back to the supported app-server and local session sources when that happens. You can change this later in Settings.',
     'Enable experimental probe',
-    'Not now',
-    'Never ask again'
+    'Not now'
   );
 
   if (choice === 'Enable experimental probe') {
     await getConfig().update(EXPERIMENTAL_WEB_USAGE_PROBE_ENABLED_SETTING, true, vscode.ConfigurationTarget.Global);
+    await context.globalState.update(EXPERIMENTAL_WEB_USAGE_PROMPT_STATE_KEY, 'enabled');
+    await context.globalState.update(EXPERIMENTAL_WEB_USAGE_OOBE_KEY, true);
+    return;
   }
 
-  if (choice === 'Enable experimental probe' || choice === 'Not now' || choice === 'Never ask again') {
-    await context.globalState.update(EXPERIMENTAL_WEB_USAGE_OOBE_KEY, true);
-  }
+  await context.globalState.update(EXPERIMENTAL_WEB_USAGE_PROMPT_STATE_KEY, 'dismissed');
+  await context.globalState.update(EXPERIMENTAL_WEB_USAGE_OOBE_KEY, true);
 }
 
 function getWorkspaceProfilePreferences(context: vscode.ExtensionContext): WorkspaceProfilePreferences {
@@ -2314,30 +2333,104 @@ type UsagePanelProfile = {
   updatedLabel: string;
 };
 
+function sanitizeTokenUsageForPanel(usage: TokenUsage | undefined): TokenUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+
+  const values = [
+    usage.inputTokens,
+    usage.cachedInputTokens,
+    usage.outputTokens,
+    usage.reasoningOutputTokens,
+    usage.totalTokens
+  ];
+  if (values.some((value) => !Number.isFinite(value))) {
+    return undefined;
+  }
+
+  return usage;
+}
+
+function sanitizeUsageWindowForPanel(window: UsageWindow | undefined): UsageWindow | undefined {
+  if (!window) {
+    return undefined;
+  }
+
+  if (
+    !Number.isFinite(window.usedPercent) ||
+    !Number.isFinite(window.windowMinutes) ||
+    !Number.isFinite(parseIsoMs(window.resetsAt))
+  ) {
+    return undefined;
+  }
+
+  return window;
+}
+
+function sanitizeUsageSnapshotForPanel(snapshot: UsageSnapshot | undefined): UsageSnapshot | undefined {
+  if (!snapshot || !Number.isFinite(parseIsoMs(snapshot.recordedAt))) {
+    return undefined;
+  }
+
+  const primary = sanitizeUsageWindowForPanel(snapshot.primary);
+  const secondary = sanitizeUsageWindowForPanel(snapshot.secondary);
+  if (!primary && !secondary) {
+    return undefined;
+  }
+
+  return {
+    ...snapshot,
+    primary,
+    secondary,
+    totalUsage: sanitizeTokenUsageForPanel(snapshot.totalUsage),
+    lastUsage: sanitizeTokenUsageForPanel(snapshot.lastUsage)
+  };
+}
+
+function sanitizeUsageHistorySamplesForPanel(history: UsageHistorySample[]): UsageHistorySample[] {
+  return history.filter((sample) => {
+    if (!Number.isFinite(parseIsoMs(sample.recordedAt))) {
+      return false;
+    }
+
+    const numericValues = [sample.primaryUsedPercent, sample.secondaryUsedPercent]
+      .filter((value): value is number => value !== undefined);
+    if (numericValues.some((value) => !Number.isFinite(value))) {
+      return false;
+    }
+
+    return true;
+  }).map((sample) => ({
+    ...sample,
+    totalUsage: sanitizeTokenUsageForPanel(sample.totalUsage),
+    lastUsage: sanitizeTokenUsageForPanel(sample.lastUsage)
+  }));
+}
+
 async function buildUsagePanelProfiles(context: vscode.ExtensionContext, activeProfileId: string): Promise<UsagePanelProfile[]> {
   const profiles = await profileStore.listProfiles();
   return profiles.map((profile) => {
     const usageView = getProfileUsageView(context, profile.id, activeProfileId);
+    const sanitizedSnapshot = sanitizeUsageSnapshotForPanel(usageView.entry?.snapshot);
+    const sanitizedHistory = sanitizeUsageHistorySamplesForPanel(usageView.history);
     return {
       id: profile.id,
       name: getProfileDisplayName(profile),
       email: getProfileDisplayEmail(profile.email),
       planType: profile.planType,
-      snapshot: usageView.entry?.snapshot,
-      history: usageView.history,
+      snapshot: sanitizedSnapshot,
+      history: sanitizedHistory,
       isStale: usageView.isStaleForActiveProfile,
       isActive: profile.id === activeProfileId,
-      sourceLabel: usageView.entry?.snapshot ? formatUsageSource(usageView.entry.snapshot.sourceFile) : 'unknown',
+      sourceLabel: sanitizedSnapshot ? formatUsageSource(sanitizedSnapshot.sourceFile) : 'unknown',
       refreshStatus: usageView.refreshDiagnostic ? formatRefreshOutcomeShort(usageView.refreshDiagnostic) : undefined,
-      updatedLabel: usageView.entry?.snapshot ? formatTimestamp(usageView.entry.snapshot.recordedAt) : 'No cached usage'
+      updatedLabel: sanitizedSnapshot ? formatTimestamp(sanitizedSnapshot.recordedAt) : 'No cached usage'
     };
   });
 }
 
 async function showUsageDetailsPanel(context: vscode.ExtensionContext): Promise<void> {
-  const activeProfileId = await profileStore.getActiveProfileId();
-  const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
-
   const panel = vscode.window.createWebviewPanel(
     'codexAccountSwitcherUsage',
     'Codex Usage Details',
@@ -2345,20 +2438,32 @@ async function showUsageDetailsPanel(context: vscode.ExtensionContext): Promise<
     { enableScripts: true }
   );
 
-  if (!activeProfileId || !activeProfile) {
-    panel.webview.html = `<!DOCTYPE html><html><body style="font-family: sans-serif; padding: 20px; color: var(--vscode-editor-foreground); background: var(--vscode-editor-background);"><h2>No profile selected</h2><p>Save or switch to a Codex profile first.</p></body></html>`;
-    return;
-  }
+  let selectedCompareProfileId = '';
+  let selectedHistoryRange: UsageHistoryRange = 'week';
 
-  const panelProfiles = await buildUsagePanelProfiles(context, activeProfileId);
+  const renderPanel = async (): Promise<void> => {
+    const activeProfileId = await profileStore.getActiveProfileId();
+    const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
+    if (!activeProfileId || !activeProfile) {
+      panel.webview.html = buildUsageDetailsEmptyHtml('No profile selected', 'Save or switch to a Codex profile first.');
+      return;
+    }
 
-  const activePanelProfile = panelProfiles.find((profile) => profile.id === activeProfileId);
-  if (!activePanelProfile) {
-    panel.webview.html = `<!DOCTYPE html><html><body style="font-family: sans-serif; padding: 20px; color: var(--vscode-editor-foreground); background: var(--vscode-editor-background);"><h2>No profile selected</h2><p>Save or switch to a Codex profile first.</p></body></html>`;
-    return;
-  }
+    const panelProfiles = await buildUsagePanelProfiles(context, activeProfileId);
+    const activePanelProfile = panelProfiles.find((profile) => profile.id === activeProfileId);
+    if (!activePanelProfile) {
+      panel.webview.html = buildUsageDetailsEmptyHtml('No profile selected', 'Save or switch to a Codex profile first.');
+      return;
+    }
 
-  panel.webview.html = buildUsageDetailsHtml(panel.webview, context.extensionUri, activePanelProfile, panelProfiles);
+    selectedCompareProfileId = resolveUsageDetailsCompareProfileId(panelProfiles, activePanelProfile.id, selectedCompareProfileId);
+    panel.webview.html = buildUsageDetailsHtml(panel.webview, activePanelProfile, panelProfiles, {
+      compareProfileId: selectedCompareProfileId,
+      historyRange: selectedHistoryRange
+    });
+  };
+
+  await renderPanel();
 
   panel.webview.onDidReceiveMessage(async (message) => {
     if (!message || typeof message !== 'object') {
@@ -2371,73 +2476,82 @@ async function showUsageDetailsPanel(context: vscode.ExtensionContext): Promise<
       return;
     }
 
+    if (message.type === 'setCompareProfile' && typeof message.profileId === 'string') {
+      selectedCompareProfileId = message.profileId;
+      await renderPanel();
+      return;
+    }
+
+    if (message.type === 'setHistoryRange') {
+      selectedHistoryRange = coerceUsageHistoryRange(message.historyRange);
+      await renderPanel();
+      return;
+    }
+
     if (message.type === 'refreshUsage') {
       await refreshUsageAndStatus(context);
-      const refreshedActiveProfileId = await profileStore.getActiveProfileId();
-      const refreshedActiveProfile = refreshedActiveProfileId ? await profileStore.getProfile(refreshedActiveProfileId) : undefined;
-      if (!refreshedActiveProfileId || !refreshedActiveProfile) {
-        panel.dispose();
-        return;
-      }
-
-      const refreshedProfiles = await buildUsagePanelProfiles(context, refreshedActiveProfileId);
-      const refreshedActivePanelProfile = refreshedProfiles.find((profile) => profile.id === refreshedActiveProfileId);
-      if (!refreshedActivePanelProfile) {
-        panel.dispose();
-        return;
-      }
-
-      panel.webview.html = buildUsageDetailsHtml(panel.webview, context.extensionUri, refreshedActivePanelProfile, refreshedProfiles);
+      await renderPanel();
     }
   });
 }
 
-function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri, activeProfile: UsagePanelProfile, profiles: UsagePanelProfile[]): string {
+type UsageHistoryRange = 'day' | 'week' | 'month' | 'year';
+type UsageDetailsPanelState = {
+  compareProfileId: string;
+  historyRange: UsageHistoryRange;
+};
+
+function createWebviewNonce(): string {
+  return randomBytes(16).toString('base64');
+}
+
+function coerceUsageHistoryRange(value: unknown): UsageHistoryRange {
+  if (value === 'day' || value === 'month' || value === 'year') {
+    return value;
+  }
+
+  return 'week';
+}
+
+function resolveUsageDetailsCompareProfileId(
+  profiles: UsagePanelProfile[],
+  activeProfileId: string,
+  preferredProfileId?: string
+): string {
+  const compareCandidates = profiles.filter((profile) => profile.id !== activeProfileId);
+  if (!compareCandidates.length) {
+    return activeProfileId;
+  }
+
+  if (preferredProfileId && compareCandidates.some((profile) => profile.id === preferredProfileId)) {
+    return preferredProfileId;
+  }
+
+  return compareCandidates[0]?.id ?? activeProfileId;
+}
+
+function buildUsageDetailsEmptyHtml(title: string, message: string): string {
+  return `<!DOCTYPE html>
+  <html>
+    <body style="font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-editor-foreground); background: var(--vscode-editor-background);">
+      <h2>${escapeHtml(title)}</h2>
+      <p>${escapeHtml(message)}</p>
+    </body>
+  </html>`;
+}
+
+function buildUsageDetailsHtml(
+  webview: vscode.Webview,
+  activeProfile: UsagePanelProfile,
+  profiles: UsagePanelProfile[],
+  panelState: UsageDetailsPanelState
+): string {
   const { warning: warningColor, critical: criticalColor } = getSeverityColors();
-  const nonce = getTimestamp();
-  const initialCompareId = profiles.find((profile) => profile.id !== activeProfile.id)?.id ?? activeProfile.id;
-  const payload = JSON.stringify({
-    activeProfileId: activeProfile.id,
-    initialCompareId,
-    profiles: profiles.map((profile) => ({
-      id: profile.id,
-      name: profile.name,
-      email: profile.email,
-      planType: profile.planType,
-      isActive: profile.isActive,
-      isStale: profile.isStale,
-      sourceLabel: profile.sourceLabel,
-      refreshStatus: profile.refreshStatus,
-      updatedLabel: profile.updatedLabel,
-      snapshot: profile.snapshot
-        ? {
-            recordedAt: profile.snapshot.recordedAt,
-            totalUsage: profile.snapshot.totalUsage,
-            lastUsage: profile.snapshot.lastUsage,
-            primary: profile.snapshot.primary
-              ? {
-                  usedPercent: profile.snapshot.primary.usedPercent,
-                  resetsAt: profile.snapshot.primary.resetsAt,
-                  windowMinutes: profile.snapshot.primary.windowMinutes
-                }
-              : undefined,
-            secondary: profile.snapshot.secondary
-              ? {
-                  usedPercent: profile.snapshot.secondary.usedPercent,
-                  resetsAt: profile.snapshot.secondary.resetsAt,
-                  windowMinutes: profile.snapshot.secondary.windowMinutes
-                }
-              : undefined
-          }
-        : undefined,
-      history: profile.history
-    })),
-    percentDisplayMode: getPercentDisplayMode(),
-    warningThreshold: getConfig().get<number>(USAGE_WARNING_THRESHOLD_SETTING, 70),
-    criticalThreshold: getConfig().get<number>(USAGE_CRITICAL_THRESHOLD_SETTING, 90),
-    warningColor,
-    criticalColor
-  });
+  const nonce = createWebviewNonce();
+  const compareProfileId = resolveUsageDetailsCompareProfileId(profiles, activeProfile.id, panelState.compareProfileId);
+  const compareProfile = profiles.find((profile) => profile.id === compareProfileId) ?? activeProfile;
+  const historyRange = coerceUsageHistoryRange(panelState.historyRange);
+  const compareCandidates = profiles.filter((profile) => profile.id !== activeProfile.id);
 
   return `<!DOCTYPE html>
   <html>
@@ -2447,11 +2561,13 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
       <style>
         body { font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); margin: 0; padding: 20px; }
         .container { max-width: 1200px; margin: 0 auto; }
-        .header { display: flex; justify-content: space-between; align-items: stretch; gap: 16px; border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 16px 18px; margin-bottom: 20px; background: var(--vscode-panel-background); min-height: 84px; }
-        .brand { display: flex; align-items: center; }
+        .header { display: flex; justify-content: space-between; align-items: end; gap: 16px; border: 1px solid var(--vscode-panel-border); border-radius: 12px; padding: 18px 20px; margin-bottom: 20px; background: linear-gradient(135deg, rgba(72, 110, 192, 0.12), rgba(16, 16, 16, 0)); }
+        .brand { display: grid; gap: 6px; }
+        .eyebrow { color: var(--vscode-descriptionForeground); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; }
         .brand-title { font-size: 30px; font-weight: 800; line-height: 1; }
-        .compare-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: auto; justify-content: flex-end; }
-        .compare-controls label { font-weight: 600; }
+        .brand-copy { color: var(--vscode-descriptionForeground); max-width: 760px; line-height: 1.4; }
+        .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-left: auto; justify-content: flex-end; }
+        .toolbar label, .compare-select-wrap label { font-weight: 600; font-size: 12px; color: var(--vscode-descriptionForeground); }
         select { background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 6px; padding: 6px 8px; min-width: 160px; }
         button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 0; border-radius: 6px; padding: 7px 12px; cursor: pointer; }
         button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
@@ -2459,7 +2575,7 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
         .card { border: 1px solid var(--vscode-panel-border); border-radius: 8px; padding: 16px; background: var(--vscode-panel-background); }
         .card-header { display: flex; justify-content: space-between; align-items: start; gap: 12px; margin-bottom: 14px; }
-        .card-header-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .card-header-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
         .card-title { margin: 0; font-size: 18px; }
         .card-subtitle { margin: 4px 0 0 0; color: var(--vscode-descriptionForeground); font-size: 12px; }
         .pill { display: inline-flex; align-items: center; border: 1px solid var(--vscode-panel-border); border-radius: 999px; padding: 3px 8px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -2483,6 +2599,8 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         .stat { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 10px; }
         .stat-label { color: var(--vscode-descriptionForeground); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
         .stat-value { font-weight: 700; }
+        .history-detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+        .history-detail { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 10px; background: rgba(255,255,255,0.03); }
         .chart-wrap { border: 1px solid var(--vscode-panel-border); border-radius: 6px; padding: 10px; background: rgba(0,0,0,0.08); }
         .chart-footer { display: flex; justify-content: space-between; gap: 10px; color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 10px; }
         .chart-legend { display: flex; gap: 14px; flex-wrap: wrap; color: var(--vscode-descriptionForeground); font-size: 12px; margin-top: 10px; }
@@ -2499,450 +2617,565 @@ function buildUsageDetailsHtml(webview: vscode.Webview, extensionUri: vscode.Uri
         .provenance-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
         .provenance-label { color: var(--vscode-descriptionForeground); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
         .provenance-value { font-weight: 600; font-size: 12px; line-height: 1.4; }
-        @media (max-width: 980px) { .columns { grid-template-columns: 1fr; } .header { justify-content: flex-start; flex-direction: column; } .compare-controls { margin-left: 0; } .provenance-grid { grid-template-columns: 1fr; } .samples-header, .samples-row { grid-template-columns: minmax(0, 1.4fr) minmax(64px, 0.7fr) minmax(64px, 0.7fr); } .samples-header > :last-child, .samples-row > :last-child { display: none; } }
+        .compare-select-wrap { display: grid; gap: 6px; }
+        .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
+        @media (max-width: 980px) { .columns { grid-template-columns: 1fr; } .header { justify-content: flex-start; flex-direction: column; align-items: stretch; } .toolbar { margin-left: 0; justify-content: flex-start; } .provenance-grid, .history-detail-grid { grid-template-columns: 1fr; } .samples-header, .samples-row { grid-template-columns: minmax(0, 1.4fr) minmax(64px, 0.7fr) minmax(64px, 0.7fr); } .samples-header > :last-child, .samples-row > :last-child { display: none; } }
       </style>
     </head>
     <body>
       <div class="container">
         <div class="header">
           <div class="brand">
-            <div class="brand-title">Codex Usage</div>
+            <div class="eyebrow">Usage Details</div>
+            <div class="brand-title">Codex Usage Dashboard</div>
+            <div class="brand-copy">Live limits, reset timing, token context, and side-by-side history views with the extra chart detail requested in issue #12.</div>
           </div>
-          <div class="compare-controls">
+          <div class="toolbar">
             <label for="historyRange">History</label>
             <select id="historyRange">
-              <option value="day">Daily</option>
-              <option value="week">Weekly</option>
-              <option value="month">Monthly</option>
-              <option value="year">Yearly</option>
+              ${renderUsageHistoryRangeOption('day', historyRange, 'Daily')}
+              ${renderUsageHistoryRangeOption('week', historyRange, 'Weekly')}
+              ${renderUsageHistoryRangeOption('month', historyRange, 'Monthly')}
+              ${renderUsageHistoryRangeOption('year', historyRange, 'Yearly')}
             </select>
           </div>
         </div>
         <div class="columns">
-          <div id="activeColumn"></div>
-          <div id="compareColumn"></div>
+          ${renderUsageDetailsCard(activeProfile, {
+            roleLabel: 'Current',
+            roleClass: 'active',
+            isCompareColumn: false,
+            compareCandidates,
+            selectedCompareProfileId: compareProfileId,
+            historyRange,
+            warningColor,
+            criticalColor
+          })}
+          ${renderUsageDetailsCard(compareProfile, {
+            roleLabel: compareProfile.id === activeProfile.id ? 'Same Profile' : 'Compare',
+            roleClass: 'compare',
+            isCompareColumn: true,
+            compareCandidates,
+            selectedCompareProfileId: compareProfileId,
+            historyRange,
+            warningColor,
+            criticalColor,
+            activeProfileId: activeProfile.id
+          })}
         </div>
       </div>
       <script nonce="${nonce}">
-        const vscode = acquireVsCodeApi();
-        const state = ${payload};
+        try {
+          const vscode = acquireVsCodeApi();
+          const historyRangeSelect = document.getElementById('historyRange');
+          const compareProfileInline = document.getElementById('compareProfileInline');
+          const switchProfileInline = document.getElementById('switchProfileInline');
+          const refreshProfileInline = document.getElementById('refreshProfileInline');
 
-        const historyRangeSelect = document.getElementById('historyRange');
-        const activeColumn = document.getElementById('activeColumn');
-        const compareColumn = document.getElementById('compareColumn');
-        let selectedCompareProfileId = state.initialCompareId;
-
-        const profilesById = new Map(state.profiles.map((profile) => [profile.id, profile]));
-        const activeProfile = profilesById.get(state.activeProfileId);
-
-        function clamp(value) {
-          return Math.max(0, Math.min(100, value));
-        }
-
-        function getDisplayPercentValue(window) {
-          return state.percentDisplayMode === 'used' ? clamp(window.usedPercent) : clamp(100 - window.usedPercent);
-        }
-
-        function formatPercent(value) {
-          const rounded = Math.round(value * 10) / 10;
-          return Number.isInteger(rounded) ? rounded.toFixed(0) + '%' : rounded.toFixed(1) + '%';
-        }
-
-        function getDisplaySuffix() {
-          return state.percentDisplayMode === 'used' ? 'used' : 'left';
-        }
-
-        function getTimeProgressPercent(window) {
-          const resetMs = new Date(window.resetsAt).getTime();
-          const windowMs = window.windowMinutes * 60 * 1000;
-          const remainingMs = Math.max(0, resetMs - Date.now());
-          return clamp(100 - ((remainingMs / windowMs) * 100));
-        }
-
-        function isOutdated(window) {
-          return new Date(window.resetsAt).getTime() <= Date.now();
-        }
-
-        function escapeHtml(value) {
-          return String(value)
-            .replaceAll('&', '&amp;')
-            .replaceAll('<', '&lt;')
-            .replaceAll('>', '&gt;')
-            .replaceAll('"', '&quot;')
-            .replaceAll("'", '&#39;');
-        }
-
-        function formatReset(iso) {
-          return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }).format(new Date(iso));
-        }
-
-        function formatTimestamp(iso) {
-          return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(iso));
-        }
-
-        function severityClass(usedPercent, outdated) {
-          if (outdated) return 'outdated';
-          if (usedPercent >= state.criticalThreshold) return 'high';
-          if (usedPercent >= state.warningThreshold) return 'medium';
-          return 'low';
-        }
-
-        function formatTokenUsage(usage) {
-          const format = (value) => Math.round(value / 1000).toLocaleString('en-US') + ' K';
-          return 'input ' + format(usage.inputTokens) + ', cached ' + format(usage.cachedInputTokens) + ', output ' + format(usage.outputTokens) + ', reasoning ' + format(usage.reasoningOutputTokens);
-        }
-
-        function getRangeWindowMs(range) {
-          if (range === 'day') return 24 * 60 * 60 * 1000;
-          if (range === 'week') return 7 * 24 * 60 * 60 * 1000;
-          if (range === 'month') return 31 * 24 * 60 * 60 * 1000;
-          return 366 * 24 * 60 * 60 * 1000;
-        }
-
-        function buildHistorySeries(profile, range) {
-          const samples = Array.isArray(profile.history) ? profile.history : [];
-          const threshold = Date.now() - getRangeWindowMs(range);
-          return samples.filter((sample) => new Date(sample.recordedAt).getTime() >= threshold);
-        }
-
-        function buildSparklinePath(points, width, height) {
-          if (!points.length) return '';
-          const step = points.length === 1 ? 0 : width / (points.length - 1);
-          return points.map((point, index) => {
-            const x = Math.round(index * step * 100) / 100;
-            const y = Math.round((height - ((clamp(point) / 100) * height)) * 100) / 100;
-            return (index === 0 ? 'M' : 'L') + x + ' ' + y;
-          }).join(' ');
-        }
-
-        function buildSamplePoints(samples, valueKey) {
-          return samples
-            .map((sample) => {
-              const value = sample[valueKey];
-              return typeof value === 'number' ? { sample, value } : null;
-            })
-            .filter(Boolean);
-        }
-
-        function formatHistoryTooltip(sample, label, value) {
-          const lines = [
-            label + ': ' + formatPercent(value) + ' used',
-            'Recorded: ' + formatTimestamp(sample.recordedAt)
-          ];
-
-          if (typeof sample.primaryUsedPercent === 'number') {
-            lines.push('5H: ' + formatPercent(sample.primaryUsedPercent) + ' used');
-          }
-          if (typeof sample.secondaryUsedPercent === 'number') {
-            lines.push('Weekly: ' + formatPercent(sample.secondaryUsedPercent) + ' used');
-          }
-
-          if (sample.lastUsage) {
-            lines.push('Last tokens: ' + formatTokenUsage(sample.lastUsage));
-          }
-          if (sample.totalUsage) {
-            lines.push('Total tokens: ' + formatTokenUsage(sample.totalUsage));
-          }
-          if (sample.sourceFile) {
-            lines.push('Source: ' + sample.sourceFile);
-          }
-
-          return lines.join('\n');
-        }
-
-        function formatHistorySource(sourceFile) {
-          if (!sourceFile) return 'unknown';
-          if (sourceFile === 'codex app-server') return 'app-server';
-          if (sourceFile === 'experimental web usage') return 'experimental web';
-          return 'session file';
-        }
-
-        function renderRecentSamples(samples) {
-          const recent = [...samples].slice(-5).reverse();
-          return [
-            '<div class="samples">',
-            '<div class="samples-header"><div>Recorded</div><div>5H</div><div>Week</div><div>Source</div></div>',
-            ...recent.map((sample) => {
-              const primary = typeof sample.primaryUsedPercent === 'number' ? formatPercent(sample.primaryUsedPercent) : '—';
-              const secondary = typeof sample.secondaryUsedPercent === 'number' ? formatPercent(sample.secondaryUsedPercent) : '—';
-              return '<div class="samples-row">'
-                + '<div><strong>' + escapeHtml(formatTimestamp(sample.recordedAt)) + '</strong></div>'
-                + '<div>' + escapeHtml(primary) + '</div>'
-                + '<div>' + escapeHtml(secondary) + '</div>'
-                + '<div>' + escapeHtml(formatHistorySource(sample.sourceFile)) + '</div>'
-                + '</div>';
-            }),
-            '</div>'
-          ].join('');
-        }
-
-        function buildPointCircles(points, width, height, color, label) {
-          if (!points.length) return '';
-          const step = points.length === 1 ? 0 : width / (points.length - 1);
-          return points.map((point, index) => {
-            const x = Math.round(index * step * 100) / 100;
-            const y = Math.round((height - ((clamp(point.value) / 100) * height)) * 100) / 100;
-            return '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + color + '"><title>' + escapeHtml(formatHistoryTooltip(point.sample, label, point.value)) + '</title></circle>';
-          }).join('');
-        }
-
-        function isFiveHourWindow(window) {
-          return !!window && Math.abs(window.windowMinutes - 300) <= 5;
-        }
-
-        function isWeeklyWindow(window) {
-          return !!window && Math.abs(window.windowMinutes - 10080) <= 60;
-        }
-
-        function formatWindowLabel(windowMinutes, compact) {
-          if (windowMinutes >= 1440 && windowMinutes % 1440 === 0) {
-            const days = windowMinutes / 1440;
-            return compact ? days + 'D' : days + '-Day Window';
-          }
-          if (windowMinutes >= 60 && windowMinutes % 60 === 0) {
-            const hours = windowMinutes / 60;
-            return compact ? hours + 'H' : hours + '-Hour Window';
-          }
-          return compact ? windowMinutes + 'M' : windowMinutes + '-Minute Window';
-        }
-
-        function getWindowDescriptors(snapshot) {
-          const windows = [snapshot?.primary, snapshot?.secondary].filter(Boolean);
-          return windows.map((window) => {
-            if (isFiveHourWindow(window)) {
-              return { key: 'fiveHour', shortLabel: '5H', longLabel: '5-Hour Session', window };
-            }
-            if (isWeeklyWindow(window)) {
-              return { key: 'weekly', shortLabel: 'Weekly', longLabel: 'Weekly Limit', window };
-            }
-            return {
-              key: 'other',
-              shortLabel: formatWindowLabel(window.windowMinutes, true),
-              longLabel: formatWindowLabel(window.windowMinutes, false),
-              window
-            };
-          }).sort((left, right) => {
-            const leftOrder = left.key === 'fiveHour' ? 0 : left.key === 'weekly' ? 1 : 2;
-            const rightOrder = right.key === 'fiveHour' ? 0 : right.key === 'weekly' ? 1 : 2;
-            if (leftOrder !== rightOrder) return leftOrder - rightOrder;
-            return left.window.windowMinutes - right.window.windowMinutes;
-          });
-        }
-
-        function renderHistorySection(profile) {
-          const range = historyRangeSelect.value || 'week';
-          const samples = buildHistorySeries(profile, range);
-          if (!samples.length) {
-            return '<section class="history"><div class="section-title">Usage History</div><div class="empty">No historical samples yet. Remaining usage is unknown until Codex emits fresh usage data.</div></section>';
-          }
-
-          const fiveHourPoints = buildSamplePoints(samples, 'primaryUsedPercent');
-          const weeklyPoints = buildSamplePoints(samples, 'secondaryUsedPercent');
-          const latest = samples[samples.length - 1];
-          const pathWidth = 500;
-          const pathHeight = 180;
-          const chartOffsetLeft = 36;
-          const chartOffsetBottom = 26;
-          const svgWidth = pathWidth + chartOffsetLeft;
-          const svgHeight = pathHeight + chartOffsetBottom;
-          const latestText = latest ? formatTimestamp(latest.recordedAt) : 'N/A';
-          const historySeries = [];
-
-          if (fiveHourPoints.length) {
-            historySeries.push({
-              label: '5H',
-              statLabel: 'Peak 5H Used',
-              color: '#4CAF50',
-              peak: Math.max(...fiveHourPoints.map((point) => point.value)),
-              path: buildSparklinePath(fiveHourPoints.map((point) => point.value), pathWidth, pathHeight),
-              points: fiveHourPoints
+          if (historyRangeSelect) {
+            historyRangeSelect.addEventListener('change', (event) => {
+              vscode.postMessage({ type: 'setHistoryRange', historyRange: event.target.value });
             });
           }
-          if (weeklyPoints.length) {
-            historySeries.push({
-              label: 'Weekly',
-              statLabel: 'Peak Weekly Used',
-              color: '#2196F3',
-              peak: Math.max(...weeklyPoints.map((point) => point.value)),
-              path: buildSparklinePath(weeklyPoints.map((point) => point.value), pathWidth, pathHeight),
-              points: weeklyPoints
+          if (compareProfileInline) {
+            compareProfileInline.addEventListener('change', (event) => {
+              vscode.postMessage({ type: 'setCompareProfile', profileId: event.target.value });
             });
           }
-
-          const axisLevels = [100, 75, 50, 25, 0];
-          const startLabel = formatTimestamp(samples[0].recordedAt);
-          const endLabel = formatTimestamp(samples[samples.length - 1].recordedAt);
-          const latestSource = latest?.sourceFile ? formatHistorySource(latest.sourceFile) : 'unknown';
-
-          return [
-            '<section class="history">',
-            '<div class="section-title">Usage History</div>',
-            '<div class="history-stats">',
-            '<div class="stat"><div class="stat-label">Range</div><div class="stat-value">' + escapeHtml(range.charAt(0).toUpperCase() + range.slice(1)) + '</div></div>',
-            '<div class="stat"><div class="stat-label">Samples</div><div class="stat-value">' + escapeHtml(String(samples.length)) + '</div></div>',
-            '<div class="stat"><div class="stat-label">Latest Source</div><div class="stat-value">' + escapeHtml(latestSource) + '</div></div>',
-            ...historySeries.map((series) => '<div class="stat"><div class="stat-label">' + escapeHtml(series.statLabel) + '</div><div class="stat-value">' + escapeHtml(formatPercent(series.peak)) + '</div></div>'),
-            '</div>',
-            '<div class="chart-wrap">',
-            '<svg viewBox="0 0 ' + svgWidth + ' ' + svgHeight + '" width="100%" height="198" role="img" aria-label="Usage history chart">',
-            '<g transform="translate(' + chartOffsetLeft + ',0)">',
-            '<rect x="0" y="0" width="' + pathWidth + '" height="' + Math.round(pathHeight * 0.25) + '" fill="rgba(244, 67, 54, 0.07)"></rect>',
-            '<rect x="0" y="' + Math.round(pathHeight * 0.25) + '" width="' + pathWidth + '" height="' + Math.round(pathHeight * 0.25) + '" fill="rgba(255, 193, 7, 0.06)"></rect>',
-            '<rect x="0" y="' + Math.round(pathHeight * 0.5) + '" width="' + pathWidth + '" height="' + Math.round(pathHeight * 0.5) + '" fill="rgba(76, 175, 80, 0.04)"></rect>',
-            ...axisLevels.map((level) => {
-              const y = Math.round((pathHeight - ((level / 100) * pathHeight)) * 100) / 100;
-              return '<line x1="0" y1="' + y + '" x2="' + pathWidth + '" y2="' + y + '" stroke="rgba(255,255,255,0.12)" stroke-width="1"></line>';
-            }),
-            '<line x1="0" y1="0" x2="0" y2="' + pathHeight + '" stroke="rgba(255,255,255,0.18)" stroke-width="1"></line>',
-            '<line x1="0" y1="' + pathHeight + '" x2="' + pathWidth + '" y2="' + pathHeight + '" stroke="rgba(255,255,255,0.18)" stroke-width="1"></line>',
-            ...historySeries.map((series) => series.path ? '<path d="' + series.path + '" fill="none" stroke="' + series.color + '" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>' : ''),
-            ...historySeries.map((series) => buildPointCircles(series.points, pathWidth, pathHeight, series.color, series.label)),
-            '</g>',
-            ...axisLevels.map((level) => {
-              const y = Math.round((pathHeight - ((level / 100) * pathHeight)) * 100) / 100;
-              return '<text x="' + (chartOffsetLeft - 6) + '" y="' + (y + 4) + '" text-anchor="end" font-size="11" fill="currentColor" opacity="0.75">' + level + '%</text>';
-            }),
-            '<text x="12" y="' + Math.round(pathHeight / 2) + '" transform="rotate(-90 12 ' + Math.round(pathHeight / 2) + ')" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75">Used %</text>',
-            '<text x="' + (chartOffsetLeft + pathWidth / 2) + '" y="' + (pathHeight + 22) + '" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75">Recorded time</text>',
-            '</svg>',
-            '<div class="chart-footer"><span>' + escapeHtml(startLabel) + '</span><span>' + escapeHtml(endLabel) + '</span></div>',
-            '<div class="chart-legend">',
-            ...historySeries.map((series) => '<span class="legend-chip"><span class="legend-line" style="background:' + series.color + '"></span>' + escapeHtml(series.label) + ' used %</span>'),
-            '<span class="legend-chip">Hover points for usage, tokens, and source</span>',
-            '<span class="legend-chip">Latest sample: ' + escapeHtml(latestText) + '</span>',
-            '</div>',
-            renderRecentSamples(samples),
-            '</div>',
-            '</section>'
-          ].join('');
-        }
-
-        function renderWindowSection(title, window) {
-          const outdated = isOutdated(window);
-          const usedPercent = clamp(window.usedPercent);
-          const displayPercent = getDisplayPercentValue(window);
-          const timePercent = getTimeProgressPercent(window);
-          const usageClass = severityClass(usedPercent, outdated);
-          return [
-            '<section class="section">',
-            '<div class="section-title">' + escapeHtml(title) + '</div>',
-            '<div class="row"><div class="label">Usage</div><div class="track"><div class="fill ' + usageClass + '" style="width:' + displayPercent + '%"></div></div><div class="value">' + (outdated ? 'N/A' : escapeHtml(formatPercent(displayPercent) + ' ' + getDisplaySuffix())) + '</div></div>',
-            '<div class="row"><div class="label">Time</div><div class="track"><div class="fill time ' + (outdated ? 'outdated' : '') + '" style="width:' + timePercent + '%"></div></div><div class="value">' + (outdated ? 'N/A' : escapeHtml(formatPercent(timePercent))) + '</div></div>',
-            '<div class="details">Reset: ' + escapeHtml(formatReset(window.resetsAt)) + (outdated ? ' [OUTDATED]' : '') + '</div>',
-            '</section>'
-          ].join('');
-        }
-
-        function renderProvenanceSection(profile) {
-          const refreshStatus = profile.refreshStatus || 'No recent refresh recorded';
-          const sourceLabel = profile.isStale ? profile.sourceLabel + ' (pre-switch cached)' : profile.sourceLabel;
-          return [
-            '<section class="provenance">',
-            '<div class="provenance-grid">',
-            '<div><div class="provenance-label">Source</div><div class="provenance-value">' + escapeHtml(sourceLabel) + '</div></div>',
-            '<div><div class="provenance-label">Updated</div><div class="provenance-value">' + escapeHtml(profile.updatedLabel) + '</div></div>',
-            '<div><div class="provenance-label">Refresh</div><div class="provenance-value">' + escapeHtml(refreshStatus) + '</div></div>',
-            '</div>',
-            '</section>'
-          ].join('');
-        }
-
-        function renderTokenSection(profile) {
-          if (!profile.snapshot?.totalUsage && !profile.snapshot?.lastUsage) {
-            return '<section class="tokens"><h3>Token Usage</h3><div class="details">No live token usage data yet. Prompt Codex on this profile to populate it.</div></section>';
-          }
-          return [
-            '<section class="tokens">',
-            '<h3>Token Usage</h3>',
-            profile.snapshot?.totalUsage ? '<div><strong>Total:</strong> ' + escapeHtml(formatTokenUsage(profile.snapshot.totalUsage)) + '</div>' : '',
-            profile.snapshot?.lastUsage ? '<div><strong>Last:</strong> ' + escapeHtml(formatTokenUsage(profile.snapshot.lastUsage)) + '</div>' : '',
-            profile.snapshot ? '<div class="details">Updated: ' + escapeHtml(formatTimestamp(profile.snapshot.recordedAt)) + '</div>' : '',
-            profile.isStale ? '<div class="warning">Last-known data only. Use Codex once after switching to refresh it.</div>' : '',
-            '</section>'
-          ].join('');
-        }
-
-        function renderProfileCard(profile, roleLabel, roleClass, isCompareColumn) {
-          const subtitleParts = [];
-          if (profile.email && profile.email !== 'Unknown') subtitleParts.push(profile.email);
-          if (profile.planType && profile.planType !== 'Unknown') subtitleParts.push(profile.planType);
-          const snapshot = profile.snapshot;
-          const noData = !snapshot?.primary && !snapshot?.secondary;
-          const compareSelector = isCompareColumn
-            ? '<select id="compareProfileInline"></select>'
-            : '<h3 class="card-title">' + escapeHtml(profile.name) + '</h3>';
-          const compareActions = isCompareColumn
-            ? '<div class="card-header-inline"><span class="pill ' + roleClass + '">' + escapeHtml(roleLabel) + '</span><button id="switchProfileInline" class="secondary" type="button">Switch Now</button></div>'
-            : '<div class="card-header-inline"><span class="pill ' + roleClass + '">' + escapeHtml(roleLabel) + '</span><button id="refreshProfileInline" class="secondary" type="button">Refresh Now</button></div>';
-          return [
-            '<article class="card">',
-            '<div class="card-header">',
-            '<div>',
-            compareSelector,
-            '<div class="card-subtitle">' + escapeHtml(subtitleParts.join(' • ') || 'No profile metadata') + '</div>',
-            '</div>',
-            compareActions,
-            '</div>',
-            renderProvenanceSection(profile),
-            noData ? '<div class="empty">Remaining usage is unknown until Codex emits live usage data for this profile. Check the refresh/source details above to see whether the last refresh found nothing newer, returned no data, or is still showing a pre-switch snapshot.</div>' : '',
-            ...getWindowDescriptors(snapshot).map((descriptor) => renderWindowSection(descriptor.longLabel, descriptor.window)),
-            renderHistorySection(profile),
-            renderTokenSection(profile),
-            '</article>'
-          ].join('');
-        }
-
-        function render() {
-          const compareProfile = profilesById.get(selectedCompareProfileId) || activeProfile;
-          activeColumn.innerHTML = renderProfileCard(activeProfile, 'Current', 'active', false);
-          compareColumn.innerHTML = renderProfileCard(compareProfile, compareProfile.id === activeProfile.id ? 'Same Profile' : 'Compare', 'compare', true);
-
-          const compareSelectInline = document.getElementById('compareProfileInline');
-          const switchInlineButton = document.getElementById('switchProfileInline');
-          const refreshInlineButton = document.getElementById('refreshProfileInline');
-          if (compareSelectInline) {
-            compareSelectInline.innerHTML = '';
-            for (const profile of state.profiles) {
-              if (profile.id === state.activeProfileId) continue;
-              const option = document.createElement('option');
-              option.value = profile.id;
-              option.textContent = profile.name + (profile.email && profile.email !== 'Unknown' ? ' • ' + profile.email : '');
-              compareSelectInline.appendChild(option);
-            }
-            if (!compareSelectInline.options.length) {
-              const option = document.createElement('option');
-              option.value = state.activeProfileId;
-              option.textContent = 'No other saved profiles';
-              compareSelectInline.appendChild(option);
-              compareSelectInline.disabled = true;
-            }
-            compareSelectInline.value = selectedCompareProfileId;
-            compareSelectInline.addEventListener('change', (event) => {
-              selectedCompareProfileId = event.target.value;
-              render();
+          if (switchProfileInline) {
+            switchProfileInline.addEventListener('click', () => {
+              const profileId = switchProfileInline.dataset.profileId;
+              if (profileId) {
+                vscode.postMessage({ type: 'switchProfile', profileId });
+              }
             });
           }
-          if (switchInlineButton) {
-            switchInlineButton.disabled = compareProfile.id === activeProfile.id;
-            switchInlineButton.addEventListener('click', () => {
-              const profileId = selectedCompareProfileId;
-              if (!profileId || profileId === state.activeProfileId) return;
-              vscode.postMessage({ type: 'switchProfile', profileId });
-            });
-          }
-          if (refreshInlineButton) {
-            refreshInlineButton.addEventListener('click', () => {
+          if (refreshProfileInline) {
+            refreshProfileInline.addEventListener('click', () => {
               vscode.postMessage({ type: 'refreshUsage' });
             });
           }
+        } catch (error) {
+          console.error('Codex usage details render failed', error);
         }
-
-        historyRangeSelect.addEventListener('change', render);
-
-        render();
       </script>
     </body>
   </html>`;
+}
+
+function renderUsageHistoryRangeOption(value: UsageHistoryRange, selected: UsageHistoryRange, label: string): string {
+  return `<option value="${escapeHtml(value)}"${selected === value ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+}
+
+function getUsageHistoryRangeWindowMs(range: UsageHistoryRange): number {
+  switch (range) {
+    case 'day':
+      return 24 * 60 * 60 * 1000;
+    case 'month':
+      return 31 * 24 * 60 * 60 * 1000;
+    case 'year':
+      return 366 * 24 * 60 * 60 * 1000;
+    default:
+      return 7 * 24 * 60 * 60 * 1000;
+  }
+}
+
+function formatUsageHistoryRangeLabel(range: UsageHistoryRange): string {
+  switch (range) {
+    case 'day':
+      return 'Daily';
+    case 'month':
+      return 'Monthly';
+    case 'year':
+      return 'Yearly';
+    default:
+      return 'Weekly';
+  }
+}
+
+function getUsageHistorySamplesForRange(history: UsageHistorySample[], range: UsageHistoryRange): UsageHistorySample[] {
+  const threshold = Date.now() - getUsageHistoryRangeWindowMs(range);
+  return history.filter((sample) => {
+    const recordedAtMs = parseIsoMs(sample.recordedAt);
+    return Number.isFinite(recordedAtMs) && recordedAtMs >= threshold;
+  });
+}
+
+function formatPercentValue(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? `${rounded.toFixed(0)}%` : `${rounded.toFixed(1)}%`;
+}
+
+function getUsageHistorySourceLabel(sourceFile?: string): string {
+  if (!sourceFile) {
+    return 'unknown';
+  }
+  if (sourceFile === 'codex app-server') {
+    return 'app-server';
+  }
+  if (sourceFile === 'experimental web usage') {
+    return 'experimental web';
+  }
+  return 'session file';
+}
+
+function buildUsageHistoryPointList(
+  samples: UsageHistorySample[],
+  key: 'primaryUsedPercent' | 'secondaryUsedPercent'
+): Array<{ sample: UsageHistorySample; value: number; recordedAtMs: number }> {
+  return samples.flatMap((sample) => {
+    const value = sample[key];
+    const recordedAtMs = parseIsoMs(sample.recordedAt);
+    return typeof value === 'number' && Number.isFinite(recordedAtMs)
+      ? [{ sample, value, recordedAtMs }]
+      : [];
+  });
+}
+
+function formatUsageHistoryTooltip(sample: UsageHistorySample, label: string, value: number): string {
+  const lines = [
+    `${label}: ${formatPercentValue(value)} used`,
+    `Recorded: ${formatTimestamp(sample.recordedAt)}`
+  ];
+
+  if (typeof sample.primaryUsedPercent === 'number') {
+    lines.push(`5H: ${formatPercentValue(sample.primaryUsedPercent)} used`);
+  }
+  if (typeof sample.secondaryUsedPercent === 'number') {
+    lines.push(`Weekly: ${formatPercentValue(sample.secondaryUsedPercent)} used`);
+  }
+  if (sample.lastUsage) {
+    lines.push(`Last tokens: ${formatTokenUsage(sample.lastUsage)}`);
+  }
+  if (sample.totalUsage) {
+    lines.push(`Total tokens: ${formatTokenUsage(sample.totalUsage)}`);
+  }
+  if (sample.sourceFile) {
+    lines.push(`Source: ${getUsageHistorySourceLabel(sample.sourceFile)}`);
+    const contextLabel = getUsageHistoryContextLabel(sample.sourceFile);
+    if (contextLabel) {
+      lines.push(`Context: ${contextLabel}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function getUsageHistoryContextLabel(sourceFile?: string): string | undefined {
+  if (!sourceFile) {
+    return undefined;
+  }
+
+  if (sourceFile === 'codex app-server') {
+    return 'Live app-server snapshot';
+  }
+  if (sourceFile === 'experimental web usage') {
+    return 'Experimental web snapshot';
+  }
+
+  const fileName = path.basename(sourceFile);
+  return fileName ? `Session file ${fileName}` : 'Local session file';
+}
+
+function formatCompactTokenCount(value: number): string {
+  if (!Number.isFinite(value)) {
+    return 'Unknown';
+  }
+
+  if (Math.abs(value) >= 1_000_000) {
+    return `${(value / 1_000_000).toFixed(value % 1_000_000 === 0 ? 0 : 1)}M`;
+  }
+  if (Math.abs(value) >= 1_000) {
+    return `${(value / 1_000).toFixed(value % 1_000 === 0 ? 0 : 1)}K`;
+  }
+
+  return Math.round(value).toLocaleString('en-US');
+}
+
+function getUsageHistoryPointX(recordedAtMs: number, startMs: number, endMs: number, width: number): number {
+  if (!Number.isFinite(recordedAtMs)) {
+    return 0;
+  }
+
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return 0;
+  }
+
+  return Math.round((((recordedAtMs - startMs) / (endMs - startMs)) * width) * 100) / 100;
+}
+
+function buildUsageHistorySparklinePath(
+  points: Array<{ sample: UsageHistorySample; value: number; recordedAtMs: number }>,
+  width: number,
+  height: number,
+  startMs: number,
+  endMs: number
+): string {
+  if (!points.length) {
+    return '';
+  }
+
+  return points.map((point, index) => {
+    const x = getUsageHistoryPointX(point.recordedAtMs, startMs, endMs, width);
+    const y = Math.round((height - ((Math.max(0, Math.min(100, point.value)) / 100) * height)) * 100) / 100;
+    return `${index === 0 ? 'M' : 'L'}${x} ${y}`;
+  }).join(' ');
+}
+
+function renderUsageHistoryPoints(
+  points: Array<{ sample: UsageHistorySample; value: number; recordedAtMs: number }>,
+  width: number,
+  height: number,
+  color: string,
+  label: string,
+  startMs: number,
+  endMs: number
+): string {
+  if (!points.length) {
+    return '';
+  }
+
+  return points.map((point) => {
+    const x = getUsageHistoryPointX(point.recordedAtMs, startMs, endMs, width);
+    const y = Math.round((height - ((Math.max(0, Math.min(100, point.value)) / 100) * height)) * 100) / 100;
+    return `<circle cx="${x}" cy="${y}" r="4" fill="${escapeHtml(color)}"><title>${escapeHtml(formatUsageHistoryTooltip(point.sample, label, point.value))}</title></circle>`;
+  }).join('');
+}
+
+function renderUsageRecentSamples(samples: UsageHistorySample[]): string {
+  const recentSamples = [...samples].slice(-5).reverse();
+  const rows = recentSamples.map((sample) => {
+    const primary = typeof sample.primaryUsedPercent === 'number' ? formatPercentValue(sample.primaryUsedPercent) : '—';
+    const secondary = typeof sample.secondaryUsedPercent === 'number' ? formatPercentValue(sample.secondaryUsedPercent) : '—';
+    const title = escapeHtmlAttribute(formatUsageHistoryTooltip(
+      sample,
+      typeof sample.primaryUsedPercent === 'number' ? '5H' : typeof sample.secondaryUsedPercent === 'number' ? 'Weekly' : 'Usage',
+      typeof sample.primaryUsedPercent === 'number' ? sample.primaryUsedPercent : sample.secondaryUsedPercent ?? 0
+    ));
+    return `<div class="samples-row" title="${title}">
+      <div><strong>${escapeHtml(formatTimestamp(sample.recordedAt))}</strong></div>
+      <div>${escapeHtml(primary)}</div>
+      <div>${escapeHtml(secondary)}</div>
+      <div>${escapeHtml(getUsageHistorySourceLabel(sample.sourceFile))}</div>
+    </div>`;
+  }).join('');
+
+  return `<div class="samples">
+    <div class="samples-header"><div>Recorded</div><div>5H</div><div>Week</div><div>Source</div></div>
+    ${rows}
+  </div>`;
+}
+
+function renderUsageHistoryLatestSampleDetails(sample: UsageHistorySample): string {
+  const details = [
+    {
+      label: 'Recorded',
+      value: formatTimestamp(sample.recordedAt)
+    },
+    {
+      label: 'Source',
+      value: getUsageHistorySourceLabel(sample.sourceFile)
+    },
+    {
+      label: 'Context',
+      value: getUsageHistoryContextLabel(sample.sourceFile) ?? 'No extra context'
+    },
+    {
+      label: '5H Used',
+      value: typeof sample.primaryUsedPercent === 'number' ? formatPercentValue(sample.primaryUsedPercent) : 'Unknown'
+    },
+    {
+      label: 'Weekly Used',
+      value: typeof sample.secondaryUsedPercent === 'number' ? formatPercentValue(sample.secondaryUsedPercent) : 'Unknown'
+    },
+    {
+      label: 'Last Tokens',
+      value: sample.lastUsage ? formatCompactTokenCount(sample.lastUsage.totalTokens) : 'Unknown'
+    },
+    {
+      label: 'Total Tokens',
+      value: sample.totalUsage ? formatCompactTokenCount(sample.totalUsage.totalTokens) : 'Unknown'
+    }
+  ];
+
+  return `<div class="history-detail-grid">
+    ${details.map((detail) => `<div class="history-detail"><div class="stat-label">${escapeHtml(detail.label)}</div><div class="stat-value">${escapeHtml(detail.value)}</div></div>`).join('')}
+  </div>`;
+}
+
+function renderUsageHistorySection(profile: UsagePanelProfile, historyRange: UsageHistoryRange): string {
+  const samples = getUsageHistorySamplesForRange(profile.history, historyRange);
+  if (!samples.length) {
+    return '<section class="history"><div class="section-title">Usage History</div><div class="empty">No historical samples yet. Remaining usage is unknown until Codex emits fresh usage data.</div></section>';
+  }
+
+  const fiveHourPoints = buildUsageHistoryPointList(samples, 'primaryUsedPercent');
+  const weeklyPoints = buildUsageHistoryPointList(samples, 'secondaryUsedPercent');
+  const latestSample = samples[samples.length - 1];
+  const startMs = parseIsoMs(samples[0]?.recordedAt);
+  const endMs = parseIsoMs(samples[samples.length - 1]?.recordedAt);
+  const chartWidth = 500;
+  const chartHeight = 180;
+  const chartOffsetLeft = 36;
+  const chartOffsetBottom = 26;
+  const svgWidth = chartWidth + chartOffsetLeft;
+  const svgHeight = chartHeight + chartOffsetBottom;
+  const axisLevels = [100, 75, 50, 25, 0];
+  const historySeries = [
+    fiveHourPoints.length
+        ? {
+          label: '5H',
+          statLabel: 'Peak 5H Used',
+          color: '#4CAF50',
+          peak: Math.max(...fiveHourPoints.map((point) => point.value)),
+          path: buildUsageHistorySparklinePath(fiveHourPoints, chartWidth, chartHeight, startMs, endMs),
+          points: fiveHourPoints
+        }
+      : undefined,
+    weeklyPoints.length
+        ? {
+          label: 'Weekly',
+          statLabel: 'Peak Weekly Used',
+          color: '#2196F3',
+          peak: Math.max(...weeklyPoints.map((point) => point.value)),
+          path: buildUsageHistorySparklinePath(weeklyPoints, chartWidth, chartHeight, startMs, endMs),
+          points: weeklyPoints
+        }
+      : undefined
+  ].filter((series): series is {
+    label: string;
+    statLabel: string;
+    color: string;
+    peak: number;
+    path: string;
+    points: Array<{ sample: UsageHistorySample; value: number; recordedAtMs: number }>;
+  } => !!series);
+
+  const statCards = [
+    `<div class="stat"><div class="stat-label">Range</div><div class="stat-value">${escapeHtml(formatUsageHistoryRangeLabel(historyRange))}</div></div>`,
+    `<div class="stat"><div class="stat-label">Samples</div><div class="stat-value">${escapeHtml(String(samples.length))}</div></div>`,
+    `<div class="stat"><div class="stat-label">Latest Source</div><div class="stat-value">${escapeHtml(getUsageHistorySourceLabel(latestSample?.sourceFile))}</div></div>`,
+    ...historySeries.map((series) => `<div class="stat"><div class="stat-label">${escapeHtml(series.statLabel)}</div><div class="stat-value">${escapeHtml(formatPercentValue(series.peak))}</div></div>`)
+  ].join('');
+
+  const gridLines = axisLevels.map((level) => {
+    const y = Math.round((chartHeight - ((level / 100) * chartHeight)) * 100) / 100;
+    return `<line x1="0" y1="${y}" x2="${chartWidth}" y2="${y}" stroke="rgba(255,255,255,0.12)" stroke-width="1"></line>`;
+  }).join('');
+
+  const axisLabels = axisLevels.map((level) => {
+    const y = Math.round((chartHeight - ((level / 100) * chartHeight)) * 100) / 100;
+    return `<text x="${chartOffsetLeft - 6}" y="${y + 4}" text-anchor="end" font-size="11" fill="currentColor" opacity="0.75">${level}%</text>`;
+  }).join('');
+
+  const paths = historySeries.map((series) => (
+    `${series.path ? `<path d="${series.path}" fill="none" stroke="${escapeHtml(series.color)}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></path>` : ''}`
+    + renderUsageHistoryPoints(series.points, chartWidth, chartHeight, series.color, series.label, startMs, endMs)
+  )).join('');
+
+  const legend = historySeries.map((series) => (
+    `<span class="legend-chip"><span class="legend-line" style="background:${escapeHtml(series.color)}"></span>${escapeHtml(series.label)} used %</span>`
+  )).join('');
+
+  return `<section class="history">
+    <div class="section-title">Usage History</div>
+    <div class="history-stats">${statCards}</div>
+    ${renderUsageHistoryLatestSampleDetails(latestSample)}
+    <div class="chart-wrap">
+      <svg viewBox="0 0 ${svgWidth} ${svgHeight}" width="100%" height="198" role="img" aria-label="Usage history chart">
+        <g transform="translate(${chartOffsetLeft},0)">
+          <rect x="0" y="0" width="${chartWidth}" height="${Math.round(chartHeight * 0.25)}" fill="rgba(244, 67, 54, 0.07)"></rect>
+          <rect x="0" y="${Math.round(chartHeight * 0.25)}" width="${chartWidth}" height="${Math.round(chartHeight * 0.25)}" fill="rgba(255, 193, 7, 0.06)"></rect>
+          <rect x="0" y="${Math.round(chartHeight * 0.5)}" width="${chartWidth}" height="${Math.round(chartHeight * 0.5)}" fill="rgba(76, 175, 80, 0.04)"></rect>
+          ${gridLines}
+          <line x1="0" y1="0" x2="0" y2="${chartHeight}" stroke="rgba(255,255,255,0.18)" stroke-width="1"></line>
+          <line x1="0" y1="${chartHeight}" x2="${chartWidth}" y2="${chartHeight}" stroke="rgba(255,255,255,0.18)" stroke-width="1"></line>
+          ${paths}
+        </g>
+        ${axisLabels}
+        <text x="12" y="${Math.round(chartHeight / 2)}" transform="rotate(-90 12 ${Math.round(chartHeight / 2)})" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75">Used %</text>
+        <text x="${chartOffsetLeft + chartWidth / 2}" y="${chartHeight + 22}" text-anchor="middle" font-size="11" fill="currentColor" opacity="0.75">Recorded time</text>
+      </svg>
+      <div class="chart-footer"><span>${escapeHtml(formatTimestamp(samples[0]?.recordedAt ?? ''))}</span><span>${escapeHtml(formatTimestamp(samples[samples.length - 1]?.recordedAt ?? ''))}</span></div>
+      <div class="chart-legend">${legend}<span class="legend-chip">Hover points for usage, tokens, and source</span><span class="legend-chip">Latest sample: ${escapeHtml(formatTimestamp(latestSample.recordedAt))}</span></div>
+      ${renderUsageRecentSamples(samples)}
+    </div>
+  </section>`;
+}
+
+function renderUsageWindowSection(title: string, window: UsageWindow, warningColor: string, criticalColor: string): string {
+  const outdated = isUsageOutdated(window);
+  const usedPercent = Math.max(0, Math.min(100, window.usedPercent));
+  const displayPercent = getDisplayPercentValue(window);
+  const timePercent = getTimeProgressPercent(window);
+  const warningThreshold = getConfig().get<number>(USAGE_WARNING_THRESHOLD_SETTING, 70);
+  const criticalThreshold = getConfig().get<number>(USAGE_CRITICAL_THRESHOLD_SETTING, 90);
+  const usageColor = outdated
+    ? '#666'
+    : usedPercent >= criticalThreshold
+      ? criticalColor
+      : usedPercent >= warningThreshold
+        ? warningColor
+        : '#4CAF50';
+
+  return `<section class="section">
+    <div class="section-title">${escapeHtml(title)}</div>
+    <div class="row">
+      <div class="label">Usage</div>
+      <div class="track"><div class="fill" style="width:${displayPercent}%; background:${escapeHtml(usageColor)}"></div></div>
+      <div class="value">${outdated ? 'N/A' : escapeHtml(`${formatDisplayPercent(window)} ${getPercentDisplaySuffixLong()}`)}</div>
+    </div>
+    <div class="row">
+      <div class="label">Time</div>
+      <div class="track"><div class="fill" style="width:${timePercent}%; background:${outdated ? '#666' : '#9C27B0'}"></div></div>
+      <div class="value">${outdated ? 'N/A' : escapeHtml(formatPercentValue(timePercent))}</div>
+    </div>
+    <div class="details">Reset: ${escapeHtml(formatResetLong(window.resetsAt))}${outdated ? ' [OUTDATED]' : ''}</div>
+  </section>`;
+}
+
+function renderUsageProvenanceSection(profile: UsagePanelProfile): string {
+  const refreshStatus = profile.refreshStatus || 'No recent refresh recorded';
+  const sourceLabel = profile.isStale ? `${profile.sourceLabel} (pre-switch cached)` : profile.sourceLabel;
+  return `<section class="provenance">
+    <div class="provenance-grid">
+      <div><div class="provenance-label">Source</div><div class="provenance-value">${escapeHtml(sourceLabel)}</div></div>
+      <div><div class="provenance-label">Updated</div><div class="provenance-value">${escapeHtml(profile.updatedLabel)}</div></div>
+      <div><div class="provenance-label">Refresh</div><div class="provenance-value">${escapeHtml(refreshStatus)}</div></div>
+    </div>
+  </section>`;
+}
+
+function renderUsageTokenSection(profile: UsagePanelProfile): string {
+  if (!profile.snapshot?.totalUsage && !profile.snapshot?.lastUsage) {
+    return '<section class="tokens"><h3>Token Usage</h3><div class="details">No live token usage data yet. Prompt Codex on this profile to populate it.</div></section>';
+  }
+
+  return `<section class="tokens">
+    <h3>Token Usage</h3>
+    ${profile.snapshot?.totalUsage ? `<div><strong>Total:</strong> ${escapeHtml(formatTokenUsage(profile.snapshot.totalUsage))}</div>` : ''}
+    ${profile.snapshot?.lastUsage ? `<div><strong>Last:</strong> ${escapeHtml(formatTokenUsage(profile.snapshot.lastUsage))}</div>` : ''}
+    ${profile.snapshot ? `<div class="details">Updated: ${escapeHtml(formatTimestamp(profile.snapshot.recordedAt))}</div>` : ''}
+    ${profile.isStale ? '<div class="warning">Last-known data only. Use Codex once after switching to refresh it.</div>' : ''}
+  </section>`;
+}
+
+function renderUsageCompareSelect(
+  compareCandidates: UsagePanelProfile[],
+  selectedCompareProfileId: string,
+  activeProfileId: string
+): string {
+  if (!compareCandidates.length) {
+    return `<div class="compare-select-wrap">
+      <label for="compareProfileInline">Compare</label>
+      <select id="compareProfileInline" disabled>
+        <option value="${escapeHtml(activeProfileId)}">No other saved profiles</option>
+      </select>
+    </div>`;
+  }
+
+  const options = compareCandidates.map((profile) => {
+    const subtitle = [
+      profile.email && profile.email !== 'Unknown' ? profile.email : undefined,
+      profile.planType && profile.planType !== 'Unknown' ? profile.planType : undefined
+    ].filter((value): value is string => !!value).join(' • ');
+    const label = subtitle ? `${profile.name} • ${subtitle}` : profile.name;
+    return `<option value="${escapeHtml(profile.id)}"${profile.id === selectedCompareProfileId ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+  }).join('');
+
+  return `<div class="compare-select-wrap">
+    <label for="compareProfileInline">Compare</label>
+    <select id="compareProfileInline">${options}</select>
+  </div>`;
+}
+
+function renderUsageDetailsCard(
+  profile: UsagePanelProfile,
+  options: {
+    roleLabel: string;
+    roleClass: 'active' | 'compare';
+    isCompareColumn: boolean;
+    compareCandidates: UsagePanelProfile[];
+    selectedCompareProfileId: string;
+    historyRange: UsageHistoryRange;
+    warningColor: string;
+    criticalColor: string;
+    activeProfileId?: string;
+  }
+): string {
+  const subtitleParts = [];
+  if (profile.email && profile.email !== 'Unknown') {
+    subtitleParts.push(profile.email);
+  }
+  if (profile.planType && profile.planType !== 'Unknown') {
+    subtitleParts.push(profile.planType);
+  }
+  const noData = !profile.snapshot?.primary && !profile.snapshot?.secondary;
+  const actionsHtml = options.isCompareColumn
+    ? `<div class="card-header-inline">
+        <span class="pill ${options.roleClass}">${escapeHtml(options.roleLabel)}</span>
+        ${renderUsageCompareSelect(options.compareCandidates, options.selectedCompareProfileId, options.activeProfileId ?? profile.id)}
+        <button id="switchProfileInline" class="secondary" type="button" data-profile-id="${escapeHtml(profile.id)}"${profile.id === (options.activeProfileId ?? profile.id) ? ' disabled' : ''}>Switch Now</button>
+      </div>`
+    : `<div class="card-header-inline">
+        <span class="pill ${options.roleClass}">${escapeHtml(options.roleLabel)}</span>
+        <button id="refreshProfileInline" class="secondary" type="button">Refresh Now</button>
+      </div>`;
+
+  return `<article class="card">
+    <div class="card-header">
+      <div>
+        <h3 class="card-title">${escapeHtml(profile.name)}</h3>
+        <div class="card-subtitle">${escapeHtml(subtitleParts.join(' • ') || 'No profile metadata')}</div>
+      </div>
+      ${actionsHtml}
+    </div>
+    ${renderUsageProvenanceSection(profile)}
+    ${noData ? '<div class="empty">Remaining usage is unknown until Codex emits live usage data for this profile. Check the refresh/source details above to see whether the last refresh found nothing newer, returned no data, or is still showing a pre-switch snapshot.</div>' : ''}
+    ${getUsageWindowDescriptors(profile.snapshot).map((descriptor) => renderUsageWindowSection(descriptor.longLabel, descriptor.window, options.warningColor, options.criticalColor)).join('')}
+    ${renderUsageHistorySection(profile, options.historyRange)}
+    ${renderUsageTokenSection(profile)}
+  </article>`;
 }
 
 async function exportProfiles(): Promise<void> {
@@ -3661,6 +3894,10 @@ function escapeHtml(value: string): string {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replaceAll('\n', '&#10;');
 }
 
 function escapeMarkdown(value: string): string {
