@@ -4,6 +4,75 @@ All notable changes to this project are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+- Profile-routed Codex homes now share one sessions/history directory. Existing default Codex sessions and any sessions already created under per-profile homes are merged into shared history before each profile home is linked to it, so installing the wrapper probe no longer makes prior task history disappear.
+- Shim-routed VS Code windows now keep their own profile route instead of recalculating every window from the latest globally active profile, so switching one window no longer silently moves another window onto the same account.
+- The native shim now resolves profile routes by the launching extension-host parent PID before falling back to VS Code's shared process PID, allowing separate VS Code windows to use separate Codex homes.
+- Wrapper probe installation now copies the native shim to a unique install-specific filename instead of overwriting the latest shim path, avoiding `EBUSY` when an older shim executable is still running.
+- The profile status item no longer keeps the spinning switch icon because of tooltip suppression alone, and stale pending-switch markers are cleared on later status refreshes if a reload timer was lost.
+
+## [0.3.15] - 2026-04-25
+
+### Fixed
+- The wrapper probe installer now writes versioned native shim filenames so reinstalling or upgrading the probe does not fail with `EBUSY` while the previous shim executable is still held open by a running Codex app-server.
+
+## [0.3.14] - 2026-04-24
+
+### Added
+- Added PID-based runtime routing for the native Codex shim. The extension now writes a `VSCODE_PID -> profile Codex home` map, and the shim reads that map before launching the real Codex app-server with `CODEX_HOME` set.
+- Added per-profile Codex home materialization under extension storage for the routing spike, preserving profile auth/config/cap state separately from the legacy shared Codex home.
+- Diagnostics now show the wrapper runtime mapping path and the current window's resolved route.
+
+## [0.3.13] - 2026-04-24
+
+### Fixed
+- Replaced the unsafe Windows `.cmd` wrapper probe with a native shim executable so OpenAI Codex can launch it directly via `chatgpt.cliExecutable` without getting stuck on startup.
+- Added a shim smoke-tested delegation path that reads an adjacent config file, logs launch context, forwards stdio to the bundled Codex executable, and preserves the delegated process exit code.
+
+## [0.3.12] - 2026-04-24
+
+### Added
+- Added an explicit Codex wrapper probe command that points OpenAI Codex's `chatgpt.cliExecutable` at a native delegating shim, records the launch arguments/cwd/environment it receives, and then forwards to the bundled Codex executable. This is the first proof step toward per-window/per-workspace Codex homes for parallel account usage.
+- Added a matching command to remove the wrapper probe and restore the previous OpenAI `cliExecutable` setting.
+- Expanded diagnostics with the configured OpenAI `cliExecutable`, wrapper probe path, wrapper invocation log path, and latest wrapper invocation entry.
+
+## [0.3.11] - 2026-04-24
+
+### Fixed
+- Removed the profile-name status bar tooltip entirely so VS Code cannot auto-open that hover card while the switcher picker closes or a profile switch is applying.
+- Added a fallback that clears pending switch spinner state if the reload command does not restart the extension host within a few seconds, preventing the profile item from getting stuck on the animated sync icon after rapid switching.
+
+## [0.3.10] - 2026-04-24
+
+### Fixed
+- Further suppressed the main profile status tooltip before the switcher opens and through the picker-close/switch sequence, closing the remaining hover race where the profile tooltip could appear under the mouse while changing accounts.
+
+## [0.3.9] - 2026-04-20
+
+### Fixed
+- Corrected the dashboard quota gauges so their curved progress arcs now render as a single segment sized to the actual displayed percentage instead of appearing nearly full because of repeated SVG dash segments. The arc now also sits above the center plate so the panel no longer cuts through the curve.
+
+## [0.3.8] - 2026-04-20
+
+### Fixed
+- The main profile status item no longer shows its hover tooltip during the brief pre-reload switch state, so changing profiles no longer causes the account/profile hover card to pop open under the mouse while the spinner is active.
+
+## [0.3.7] - 2026-04-20
+
+### Fixed
+- Profile switching no longer shows redundant “switch requested” or “switch complete” information popups. The status label already reflects the requested profile, so the switch flow now stays quiet while still auto-reloading in the background.
+- The main profile status tooltip no longer swaps in a pending-switch hover message during profile changes, which avoids the distracting hover popup effect while the status label is updating.
+
+## [0.3.6] - 2026-04-20
+
+### Fixed
+- Restored automatic reload after profile switches, imports, and reauthentication. The temporary regression that could leave switches waiting on a manual reload is gone, and the status bar once again uses the spinning sync icon only for the brief pre-reload pending state.
+
+### Changed
+- Replaced the old string-built usage details panel with a bundled componentized webview app. The dashboard now leads with an overview layout for the active profile, quota gauges, quick controls, and saved-profile cards while preserving the existing history chart, compare flow, provenance, and token detail sections.
+- Removed the noisy process-activity warning from manual profile switching, importing, and reauthentication flows. Process safety checks now only suppress low-usage auto-switching while Codex appears active.
+- Workspace profile preference prompts are now opt-in instead of enabled by default, so the extension no longer interrupts normal switching flows with “remember this repo/profile” suggestions unless you explicitly turn that feature on.
+
 ## [0.3.4] - 2026-04-19
 
 ### Fixed

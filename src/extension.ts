@@ -7,17 +7,22 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
 import {
+  getBundledCliExecutableForHost,
   getCodexCliLaunchSpec,
   getCodexCliCommandSpec,
   getCodexLoginCommandText,
   getCodexLoginHintText,
+  getConfiguredOpenAiCliExecutable,
   getResolvedActiveAuthPath,
   getResolvedCapSidPath,
   getResolvedCodexHome,
   getResolvedCodexConfigPath,
   loadAuthDataFromFile,
   loadCodexConfigText,
-  shouldUseWslAuthPath
+  shouldUseWslAuthPath,
+  syncAuthFile,
+  syncCapSidFile,
+  syncCodexConfigFile
 } from './auth';
 import {
   decryptTransferPayload,
@@ -39,6 +44,16 @@ import {
 } from './core';
 import { ProfileStore, ProfileSummary } from './profileStore';
 import { getSessionsPath, readCurrentUsageSnapshot, TokenUsage, UsageSnapshot, UsageSourceMode, UsageWindow } from './usage';
+import {
+  UsageDashboardFromWebviewMessage,
+  UsageDashboardState,
+  UsageDashboardToWebviewMessage,
+  UsageHistoryRange,
+  UsageHistorySample,
+  UsagePanelProfile,
+  UsageWindowDescriptor
+} from './usageDashboardTypes';
+import { buildUsageDashboardWebviewHtml } from './usageDashboardWebview';
 
 const EXT_NS = 'codexAccountSwitcher';
 const CMD_SWITCH = 'codexAccountSwitcher.switchAccount';
@@ -59,6 +74,8 @@ const CMD_MANAGE = 'codexAccountSwitcher.manageProfiles';
 const CMD_SHOW_USAGE_DETAILS = 'codexAccountSwitcher.showUsageDetails';
 const CMD_OPEN_OPENAI_USAGE = 'codexAccountSwitcher.openOpenAiUsage';
 const CMD_REFRESH_USAGE = 'codexAccountSwitcher.refreshUsage';
+const CMD_INSTALL_WRAPPER_PROBE = 'codexAccountSwitcher.installWrapperProbe';
+const CMD_REMOVE_WRAPPER_PROBE = 'codexAccountSwitcher.removeWrapperProbe';
 const STATUS_SIDE_SETTING = 'statusBarSide';
 const RELOAD_TARGET_SETTING = 'reloadTarget';
 const STORAGE_MODE_SETTING = 'storageMode';
@@ -91,6 +108,17 @@ const EXPERIMENTAL_WEB_USAGE_OOBE_KEY = 'experimentalWebUsageProbeOobeCompleted'
 const EXPERIMENTAL_WEB_USAGE_PROMPT_STATE_KEY = 'experimentalWebUsageProbePromptState';
 const WORKSPACE_PROFILE_PREFERENCES_KEY = 'workspaceProfilePreferences';
 const WORKSPACE_PROFILE_SUPPRESSIONS_KEY = 'workspaceProfileSuppressions';
+const WINDOW_PROFILE_OVERRIDES_KEY = 'windowProfileOverrides';
+const WRAPPER_PROBE_PREVIOUS_CLI_KEY = 'wrapperProbePreviousCliExecutable';
+const WRAPPER_PROBE_DIR_NAME = 'codex-wrapper-probe';
+const WRAPPER_PROBE_LOG_NAME = 'invocations.jsonl';
+const WRAPPER_PROBE_CONFIG_NAME = 'codex-switcher-shim.json';
+const WRAPPER_PROBE_RUNTIME_MAP_NAME = 'runtime-windows.json';
+const PROFILE_HOMES_DIR_NAME = 'codex-homes';
+const SHARED_CODEX_DIR_NAME = 'codex-shared';
+const SESSIONS_DIR_NAME = 'sessions';
+const SHIM_BUILD_ID = '0.3.15-pidroute';
+const PENDING_SWITCH_STATUS_TIMEOUT_MS = 10000;
 const execFileAsync = promisify(execFile);
 
 let statusBar: vscode.StatusBarItem;
@@ -105,6 +133,10 @@ let lowUsageSuggestionKey: string | undefined;
 let lowUsageAutoSwitchTimer: NodeJS.Timeout | undefined;
 let lowUsageHandlingInProgress = false;
 let lastUsageRefreshDiagnostic: UsageRefreshDiagnostic | undefined;
+let suppressProfileStatusTooltipUntilReload = false;
+let suppressProfileStatusTooltipTransiently = false;
+let profileStatusTooltipSuppressionTimer: NodeJS.Timeout | undefined;
+let pendingSwitchFallbackTimer: NodeJS.Timeout | undefined;
 const sessionWorkspacePromptedKeys = new Set<string>();
 
 type CachedUsageEntry = {
@@ -113,14 +145,6 @@ type CachedUsageEntry = {
 };
 
 type UsageCache = Record<string, CachedUsageEntry>;
-type UsageHistorySample = {
-  recordedAt: string;
-  primaryUsedPercent?: number;
-  secondaryUsedPercent?: number;
-  totalUsage?: TokenUsage;
-  lastUsage?: TokenUsage;
-  sourceFile?: string;
-};
 type UsageHistoryStore = Record<string, UsageHistorySample[]>;
 type LastSwitchMap = Record<string, string>;
 type PendingSwitchState = {
@@ -151,6 +175,27 @@ type WorkspaceContextInfo = {
   rootPath: string;
   remoteUrl?: string;
 };
+type RuntimeWindowMapping = {
+  vscodePid: string;
+  workspaceKey?: string;
+  workspaceLabel?: string;
+  rootPath?: string;
+  remoteUrl?: string;
+  profileId?: string;
+  profileName?: string;
+  codexHome?: string;
+  source: 'workspacePreference' | 'windowOverride' | 'windowRoute' | 'activeProfile' | 'none';
+  updatedAt: string;
+};
+type RuntimeWindowMappingsFile = {
+  version: 1;
+  windows: Record<string, RuntimeWindowMapping>;
+};
+type WindowProfileOverride = {
+  profileId: string;
+  updatedAt: string;
+};
+type WindowProfileOverrides = Record<string, WindowProfileOverride>;
 
 type ProfileQuickPickItem = vscode.QuickPickItem & {
   itemType: 'profile';
@@ -204,14 +249,6 @@ type SeverityColors = {
   critical: string;
 };
 
-type UsageWindowDescriptor = {
-  key: 'fiveHour' | 'weekly' | 'other';
-  shortLabel: string;
-  longLabel: string;
-  icon: string;
-  window: UsageWindow;
-};
-
 const FIVE_HOUR_WINDOW_MINUTES = 300;
 const WEEKLY_WINDOW_MINUTES = 7 * 24 * 60;
 
@@ -237,6 +274,12 @@ export function activate(context: vscode.ExtensionContext): void {
       if (usageRefreshDebounce) {
         clearTimeout(usageRefreshDebounce);
       }
+      if (profileStatusTooltipSuppressionTimer) {
+        clearTimeout(profileStatusTooltipSuppressionTimer);
+      }
+      if (pendingSwitchFallbackTimer) {
+        clearTimeout(pendingSwitchFallbackTimer);
+      }
       usageWatcher?.close();
     }
   });
@@ -261,6 +304,8 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(vscode.commands.registerCommand(CMD_REFRESH_USAGE, async () => {
     await refreshUsageAndStatus(context);
   }));
+  context.subscriptions.push(vscode.commands.registerCommand(CMD_INSTALL_WRAPPER_PROBE, () => installWrapperProbe(context)));
+  context.subscriptions.push(vscode.commands.registerCommand(CMD_REMOVE_WRAPPER_PROBE, () => removeWrapperProbe(context)));
 
   context.subscriptions.push(
     ...profileStore.createWatchers(() => {
@@ -273,10 +318,12 @@ export function activate(context: vscode.ExtensionContext): void {
   }));
 
   context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+    void writeRuntimeWindowMapping(context);
     void maybePromptForPreferredWorkspaceProfile(context);
   }));
 
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => {
+    void writeRuntimeWindowMapping(context);
     void maybePromptForPreferredWorkspaceProfile(context);
   }));
 
@@ -303,6 +350,7 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     void refreshUsageAndStatus(context);
+    void writeRuntimeWindowMapping(context);
     if (e.affectsConfiguration(`${EXT_NS}.${WORKSPACE_PROFILE_PROMPTS_ENABLED_SETTING}`)) {
       void maybePromptForPreferredWorkspaceProfile(context);
     }
@@ -320,6 +368,7 @@ async function initializeProfiles(context: vscode.ExtensionContext): Promise<voi
   await maybeOfferExperimentalWebUsageProbe(context);
   await migrateLegacyAccounts(context);
   await profileStore.syncActiveProfileToAuthFile();
+  await writeRuntimeWindowMapping(context);
   await resolvePendingSwitchState(context);
   await refreshUsageAndStatus(context);
   await maybePromptForPreferredWorkspaceProfile(context);
@@ -442,7 +491,7 @@ function areProcessSafetyChecksEnabled(): boolean {
 }
 
 function areWorkspaceProfilePromptsEnabled(): boolean {
-  return getConfig().get<boolean>(WORKSPACE_PROFILE_PROMPTS_ENABLED_SETTING, true);
+  return getConfig().get<boolean>(WORKSPACE_PROFILE_PROMPTS_ENABLED_SETTING, false);
 }
 
 function isExperimentalWebUsageProbeEnabled(): boolean {
@@ -509,6 +558,24 @@ async function updateWorkspacePromptSuppressions(
   await context.globalState.update(WORKSPACE_PROFILE_SUPPRESSIONS_KEY, suppressions);
 }
 
+function getWindowProfileOverrides(context: vscode.ExtensionContext): WindowProfileOverrides {
+  return context.globalState.get<WindowProfileOverrides>(WINDOW_PROFILE_OVERRIDES_KEY, {});
+}
+
+async function setCurrentWindowProfileOverride(context: vscode.ExtensionContext, profileId: string): Promise<void> {
+  const vscodePid = getRuntimeWindowPid();
+  if (!vscodePid) {
+    return;
+  }
+
+  const overrides = getWindowProfileOverrides(context);
+  overrides[vscodePid] = {
+    profileId,
+    updatedAt: new Date().toISOString()
+  };
+  await context.globalState.update(WINDOW_PROFILE_OVERRIDES_KEY, overrides);
+}
+
 async function execGit(args: string[], cwd: string): Promise<string | undefined> {
   try {
     const { stdout } = await execFileAsync('git', args, { cwd, windowsHide: true, timeout: 4000 });
@@ -557,7 +624,7 @@ async function maybePromptForPreferredWorkspaceProfile(context: vscode.Extension
   }
 
   const preference = getWorkspaceProfilePreferences(context)[workspace.workspaceKey];
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   const suppressions = getWorkspacePromptSuppressions(context);
   const decision = getWorkspaceProfileSwitchPromptDecision({
     promptsEnabled: true,
@@ -647,6 +714,7 @@ async function maybeOfferRememberWorkspaceProfile(
       await updateWorkspacePromptSuppressions(context, suppressions);
     }
     await updateWorkspaceProfilePreferences(context, preferences);
+    await writeRuntimeWindowMapping(context);
     return;
   }
 
@@ -746,20 +814,10 @@ async function confirmNoBusyCodexBeforeSwitch(
     : reason === 'activate import'
       ? 'activate the imported profile'
       : 'activate the reauthenticated profile';
-  const choice = await vscode.window.showWarningMessage(
-    `Codex appears to be active (${summarizeCodexProcesses(runningProcesses)}). Switching now can interrupt live tasks or leave state half-applied. Do you still want to ${actionLabel} to '${targetProfileName}'?`,
-    { modal: true },
-    'Switch anyway',
-    'Cancel',
-    'Open settings'
+  output.appendLine(
+    `Codex process activity detected (${summarizeCodexProcesses(runningProcesses)}) while preparing to ${actionLabel} to '${targetProfileName}'. Continuing without an interactive warning.`
   );
-
-  if (choice === 'Open settings') {
-    await editSettings();
-    return false;
-  }
-
-  return choice === 'Switch anyway';
+  return true;
 }
 
 function getThemeAwareSeverityDefaults(): SeverityColors {
@@ -877,10 +935,43 @@ async function setPendingSwitchState(context: vscode.ExtensionContext, state: Pe
   await context.globalState.update(PENDING_SWITCH_APPLY_KEY, state);
 }
 
+function suppressProfileStatusTooltip(context: vscode.ExtensionContext): void {
+  if (profileStatusTooltipSuppressionTimer) {
+    clearTimeout(profileStatusTooltipSuppressionTimer);
+    profileStatusTooltipSuppressionTimer = undefined;
+  }
+  suppressProfileStatusTooltipTransiently = true;
+  statusBar.hide();
+  statusBar.tooltip = undefined;
+  statusBar.show();
+  void refreshStatusBar(context);
+}
+
+function releaseTransientProfileStatusTooltipSuppression(context: vscode.ExtensionContext, delayMs = 1800): void {
+  if (profileStatusTooltipSuppressionTimer) {
+    clearTimeout(profileStatusTooltipSuppressionTimer);
+  }
+
+  profileStatusTooltipSuppressionTimer = setTimeout(() => {
+    profileStatusTooltipSuppressionTimer = undefined;
+    if (suppressProfileStatusTooltipUntilReload || getPendingSwitchState(context)) {
+      return;
+    }
+    suppressProfileStatusTooltipTransiently = false;
+    void refreshStatusBar(context);
+  }, delayMs);
+}
+
 async function markPendingSwitchApply(
   context: vscode.ExtensionContext,
   profile: Pick<ProfileSummary, 'id' | 'name'>
 ): Promise<void> {
+  suppressProfileStatusTooltipUntilReload = true;
+  suppressProfileStatusTooltipTransiently = true;
+  if (profileStatusTooltipSuppressionTimer) {
+    clearTimeout(profileStatusTooltipSuppressionTimer);
+    profileStatusTooltipSuppressionTimer = undefined;
+  }
   const reloadTarget = getConfig().get<string>(RELOAD_TARGET_SETTING, 'extensionHost') === 'window' ? 'window' : 'extensionHost';
   await setPendingSwitchState(context, {
     profileId: profile.id,
@@ -891,13 +982,22 @@ async function markPendingSwitchApply(
 }
 
 async function resolvePendingSwitchState(context: vscode.ExtensionContext): Promise<void> {
+  if (pendingSwitchFallbackTimer) {
+    clearTimeout(pendingSwitchFallbackTimer);
+    pendingSwitchFallbackTimer = undefined;
+  }
+
   const pending = getPendingSwitchState(context);
   if (!pending) {
+    suppressProfileStatusTooltipUntilReload = false;
+    suppressProfileStatusTooltipTransiently = false;
     return;
   }
 
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   await setPendingSwitchState(context, undefined);
+  suppressProfileStatusTooltipUntilReload = false;
+  suppressProfileStatusTooltipTransiently = false;
 
   if (activeProfileId !== pending.profileId) {
     output.appendLine(`Cleared stale pending switch marker for '${pending.profileName}'.`);
@@ -905,7 +1005,18 @@ async function resolvePendingSwitchState(context: vscode.ExtensionContext): Prom
   }
 
   output.appendLine(`Profile switch to '${pending.profileName}' is now applied after reload.`);
-  void vscode.window.showInformationMessage(`Codex account/profile '${pending.profileName}' is now applied after reload.`);
+}
+
+async function clearExpiredPendingSwitchState(context: vscode.ExtensionContext, pending: PendingSwitchState): Promise<void> {
+  const requestedAtMs = parseIsoMs(pending.requestedAt);
+  if (!requestedAtMs || Date.now() - requestedAtMs < PENDING_SWITCH_STATUS_TIMEOUT_MS) {
+    return;
+  }
+
+  suppressProfileStatusTooltipUntilReload = false;
+  suppressProfileStatusTooltipTransiently = false;
+  await setPendingSwitchState(context, undefined);
+  output.appendLine(`Cleared expired pending switch marker for '${pending.profileName}'.`);
 }
 
 async function safeExists(filePath: string): Promise<boolean> {
@@ -915,6 +1026,38 @@ async function safeExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function readLastNonEmptyLine(filePath: string): Promise<string> {
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    const line = text.split(/\r?\n/).reverse().find((entry) => entry.trim().length > 0);
+    return line?.trim() ?? 'No wrapper invocations recorded yet';
+  } catch {
+    return 'No wrapper invocations recorded yet';
+  }
+}
+
+async function readRuntimeWindowMappingSummary(filePath: string): Promise<string> {
+  const vscodePid = getRuntimeWindowPid();
+  if (!vscodePid) {
+    return 'No VS Code PID available';
+  }
+
+  const mappings = await readRuntimeWindowMappings(filePath);
+  const mapping = mappings.windows[vscodePid];
+  if (!mapping) {
+    return `No route recorded for VS Code PID ${vscodePid}`;
+  }
+
+  const parts = [
+    `PID ${vscodePid}`,
+    mapping.profileName ? `profile ${mapping.profileName}` : undefined,
+    mapping.source,
+    mapping.workspaceLabel ? `workspace ${mapping.workspaceLabel}` : undefined,
+    mapping.codexHome
+  ].filter((part): part is string => Boolean(part));
+  return parts.join(' • ');
 }
 
 async function maybeWarnEnsureFileBasedCreds(context: vscode.ExtensionContext): Promise<void> {
@@ -941,7 +1084,7 @@ async function refreshUsageAndStatus(context: vscode.ExtensionContext): Promise<
 }
 
 async function refreshActiveUsageCache(context: vscode.ExtensionContext): Promise<void> {
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   const sourceMode = getUsageSourceMode();
   const attemptedAt = new Date().toISOString();
   if (!activeProfileId) {
@@ -954,9 +1097,10 @@ async function refreshActiveUsageCache(context: vscode.ExtensionContext): Promis
   }
 
   const authData = isExperimentalWebUsageProbeEnabled()
-    ? await loadAuthDataFromFile(getResolvedActiveAuthPath())
+    ? await profileStore.loadAuthData(activeProfileId)
     : null;
-  const snapshot = await readCurrentUsageSnapshot(getResolvedCodexHome(), sourceMode, {
+  const codexHome = await materializeProfileCodexHome(context, activeProfileId) ?? getResolvedCodexHome();
+  const snapshot = await readCurrentUsageSnapshot(codexHome, sourceMode, {
     experimentalWebProbeEnabled: isExperimentalWebUsageProbeEnabled(),
     webAccessToken: authData?.accessToken,
     webAccountId: authData?.accountId
@@ -1012,12 +1156,13 @@ async function refreshActiveUsageCache(context: vscode.ExtensionContext): Promis
 
 async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void> {
   const profiles = await profileStore.listProfiles();
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
 
   if (!profiles.length || !activeProfileId || !activeProfile) {
+    statusBar.command = CMD_SWITCH;
     statusBar.text = '$(tools) Setup';
-    statusBar.tooltip = 'Configure Codex account and profile switching';
+    statusBar.tooltip = undefined;
     statusBar.show();
     usageStatusBar.hide();
     usageRefreshStatusBar.hide();
@@ -1026,10 +1171,26 @@ async function refreshStatusBar(context: vscode.ExtensionContext): Promise<void>
 
   const usageView = getProfileUsageView(context, activeProfileId, activeProfileId);
   const pendingSwitch = getPendingSwitchState(context);
-  const reloadPending = pendingSwitch?.profileId === activeProfileId ? pendingSwitch : undefined;
-  statusBar.text = `${reloadPending ? '$(sync~spin)' : '$(account)'} ${getProfileDisplayName(activeProfile)}`;
-  statusBar.tooltip = createActiveProfileTooltip(activeProfile, usageView.isStaleForActiveProfile, reloadPending);
-  statusBar.show();
+  if (pendingSwitch) {
+    await clearExpiredPendingSwitchState(context, pendingSwitch);
+  }
+  const currentPendingSwitch = getPendingSwitchState(context);
+  const reloadPending = currentPendingSwitch?.profileId === activeProfileId ? currentPendingSwitch : undefined;
+  const switchReloadPending = !!reloadPending;
+  const suppressProfileTooltip = switchReloadPending || suppressProfileStatusTooltipUntilReload || suppressProfileStatusTooltipTransiently;
+  statusBar.command = CMD_SWITCH;
+  const nextStatusText = `${switchReloadPending ? '$(sync~spin)' : '$(account)'} ${getProfileDisplayName(activeProfile)}`;
+  if (suppressProfileTooltip) {
+    // Hide/show the item after clearing tooltip so VS Code does not keep the prior hover open under the mouse.
+    statusBar.hide();
+    statusBar.tooltip = undefined;
+    statusBar.text = nextStatusText;
+    statusBar.show();
+  } else {
+    statusBar.tooltip = undefined;
+    statusBar.text = nextStatusText;
+    statusBar.show();
+  }
 
   if (getConfig().get<boolean>(SHOW_STATUS_BAR_USAGE_SETTING, true)) {
     const snapshot = usageView.entry?.snapshot;
@@ -1143,7 +1304,7 @@ async function maybeHandleLowUsageProfileSwitch(context: vscode.ExtensionContext
     return;
   }
 
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   if (!activeProfileId) {
     return;
   }
@@ -1400,20 +1561,13 @@ function formatUsageSourceMode(mode: UsageSourceMode): string {
 
 function createActiveProfileTooltip(
   profile: ProfileSummary,
-  isStaleForActiveProfile: boolean,
-  pendingSwitch?: PendingSwitchState
+  isStaleForActiveProfile: boolean
 ): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString();
   tooltip.isTrusted = true;
   tooltip.supportThemeIcons = true;
   tooltip.appendMarkdown(`## $(account) ${escapeMarkdown(getProfileDisplayName(profile))}\n\n`);
   appendCompactProfileSummaryMarkdown(tooltip, profile, { includeProfileName: false, includeLinks: true });
-
-  if (pendingSwitch) {
-    const reloadCommand = pendingSwitch.reloadTarget === 'window' ? CMD_RELOAD : CMD_RESTART_EXTENSION_HOST;
-    tooltip.appendMarkdown(`$(sync~spin) Switch requested ${escapeMarkdown(formatTimestamp(pendingSwitch.requestedAt))}. Reload ${escapeMarkdown(pendingSwitch.reloadTarget === 'window' ? 'the window' : 'the extension host')} to fully apply it.`);
-    tooltip.appendMarkdown(` • [Reload Now](${buildCommandUri(reloadCommand)})\n\n`);
-  }
 
   tooltip.appendMarkdown(`[Switch Profiles](${buildCommandUri(CMD_SWITCH)})`);
   tooltip.appendMarkdown(' • Use the status bar item to switch Codex account/profile.');
@@ -1476,14 +1630,16 @@ function appendUsageSection(tooltip: vscode.MarkdownString, title: string, windo
 
 async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise<void> {
   await maybeWarnEnsureFileBasedCreds(context);
+  suppressProfileStatusTooltip(context);
 
   const profiles = await profileStore.listProfiles();
   if (!profiles.length) {
+    releaseTransientProfileStatusTooltipSuppression(context);
     await manageProfiles(context, 'No saved profiles yet.');
     return;
   }
 
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   const quickPick = vscode.window.createQuickPick<SwitcherQuickPickItem>();
   quickPick.placeholder = 'Select a Codex account/profile or action';
   quickPick.items = buildSwitcherItems(context, profiles, activeProfileId);
@@ -1495,7 +1651,7 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
   void (async () => {
     await refreshUsageAndStatus(context);
     const refreshedProfiles = await profileStore.listProfiles();
-    const refreshedActiveProfileId = await profileStore.getActiveProfileId();
+    const refreshedActiveProfileId = await getEffectiveActiveProfileId(context);
     if (!closed) {
       quickPick.items = buildSwitcherItems(context, refreshedProfiles, refreshedActiveProfileId);
       quickPick.busy = false;
@@ -1507,10 +1663,10 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
     }
   });
 
-  await new Promise<void>((resolve) => {
+  const chosen = await new Promise<SwitcherQuickPickItem | undefined>((resolve) => {
     let settled = false;
 
-    const finish = (): void => {
+    const finish = (item?: SwitcherQuickPickItem): void => {
       if (settled) {
         return;
       }
@@ -1519,7 +1675,7 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
       acceptDisposable.dispose();
       hideDisposable.dispose();
       quickPick.dispose();
-      resolve();
+      resolve(item);
     };
 
     const acceptDisposable = quickPick.onDidAccept(() => {
@@ -1528,17 +1684,24 @@ async function switchProfileViaPicker(context: vscode.ExtensionContext): Promise
         return;
       }
 
-      void (async () => {
-        quickPick.hide();
-        finish();
-        await handleSwitcherChoice(chosen, context);
-      })();
+      quickPick.hide();
+      finish(chosen);
     });
 
     const hideDisposable = quickPick.onDidHide(() => {
       finish();
     });
   });
+
+  if (!chosen || !('itemType' in chosen)) {
+    releaseTransientProfileStatusTooltipSuppression(context);
+    return;
+  }
+
+  await handleSwitcherChoice(chosen, context);
+  if (!suppressProfileStatusTooltipUntilReload && !getPendingSwitchState(context)) {
+    releaseTransientProfileStatusTooltipSuppression(context);
+  }
 }
 
 function buildSwitcherItems(
@@ -1706,12 +1869,14 @@ async function switchToProfile(profileId: string, context: vscode.ExtensionConte
     return;
   }
 
+  await setCurrentWindowProfileOverride(context, profileId);
   await markPendingSwitchApply(context, profile);
   await setLastSwitchAt(context, profileId, new Date().toISOString());
+  await writeRuntimeWindowMapping(context);
   await refreshStatusBar(context);
   output.appendLine(`Requested profile switch to '${getProfileDisplayName(profile)}'; reload pending.`);
   await maybeOfferRememberWorkspaceProfile(context, profile);
-  await maybeReloadAfterSwitch(context, getProfileDisplayName(profile));
+  await maybeReloadAfterSwitch(context);
 }
 
 async function backupActiveAuthIfNeeded(): Promise<void> {
@@ -1730,14 +1895,21 @@ async function backupActiveAuthIfNeeded(): Promise<void> {
   output.appendLine(`Backed up active auth to ${backupPath}`);
 }
 
-function hasDirtyEditors(): boolean {
-  return vscode.workspace.textDocuments.some((doc) => doc.isDirty);
-}
-
-async function maybeReloadAfterSwitch(context: vscode.ExtensionContext, profileName: string): Promise<void> {
+async function maybeReloadAfterSwitch(context: vscode.ExtensionContext): Promise<void> {
   const reloadTarget = getConfig().get<string>(RELOAD_TARGET_SETTING, 'extensionHost');
 
   const triggerReload = (): void => {
+    if (pendingSwitchFallbackTimer) {
+      clearTimeout(pendingSwitchFallbackTimer);
+    }
+    pendingSwitchFallbackTimer = setTimeout(() => {
+      pendingSwitchFallbackTimer = undefined;
+      suppressProfileStatusTooltipUntilReload = false;
+      suppressProfileStatusTooltipTransiently = false;
+      void setPendingSwitchState(context, undefined).then(() => refreshStatusBar(context));
+      output.appendLine('Cleared pending switch state because the reload command did not complete within the fallback window.');
+    }, 5000);
+
     setTimeout(() => {
       const command = reloadTarget === 'extensionHost' ? CMD_RESTART_EXTENSION_HOST : 'workbench.action.reloadWindow';
       void vscode.commands.executeCommand(command).then(undefined, async () => {
@@ -1750,24 +1922,6 @@ async function maybeReloadAfterSwitch(context: vscode.ExtensionContext, profileN
     }, 25);
   };
 
-  if (hasDirtyEditors()) {
-    const choice = await vscode.window.showWarningMessage(
-      `Requested Codex account/profile switch to: ${profileName}. Reload is still needed to fully apply it. You have unsaved editors. Reload now?`,
-      { modal: true },
-      'Reload now',
-      'Cancel'
-    );
-    if (choice === 'Reload now') {
-      triggerReload();
-    } else {
-      void vscode.window.showInformationMessage(
-        `Switch requested for Codex account/profile: ${profileName}. Reload when ready to fully apply it to running tools.`
-      );
-    }
-    return;
-  }
-
-  void vscode.window.showInformationMessage(`Switch requested for Codex account/profile: ${profileName}. Reloading to apply it...`);
   triggerReload();
 }
 
@@ -1901,7 +2055,7 @@ async function finalizeImportedProfile(
     await refreshUsageAndStatus(context);
     void vscode.window.showInformationMessage(baseMessage);
     await maybeOfferRememberWorkspaceProfile(context, profile);
-    await maybeReloadAfterSwitch(context, getProfileDisplayName(profile));
+    await maybeReloadAfterSwitch(context);
     return;
   }
 
@@ -2109,7 +2263,7 @@ async function reauthenticateProfile(context: vscode.ExtensionContext): Promise<
       await refreshUsageAndStatus(context);
       output.appendLine(`Reauthenticated profile '${getProfileDisplayName(targetProfile)}'`);
       await maybeOfferRememberWorkspaceProfile(context, targetProfile);
-      await maybeReloadAfterSwitch(context, getProfileDisplayName(targetProfile));
+      await maybeReloadAfterSwitch(context);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown reauthentication error.';
       void vscode.window.showErrorMessage(message);
@@ -2185,6 +2339,409 @@ async function editSettings(): Promise<void> {
   if (openJson === 'Open settings.json') {
     await vscode.commands.executeCommand('workbench.action.openSettingsJson');
   }
+}
+
+function getShimPlatformDir(platform = process.platform, arch = process.arch): string | undefined {
+  const platformPart = platform === 'win32'
+    ? 'win32'
+    : platform === 'linux'
+      ? 'linux'
+      : platform === 'darwin'
+        ? 'darwin'
+        : undefined;
+  const archPart = arch === 'x64'
+    ? 'x64'
+    : arch === 'arm64'
+      ? 'arm64'
+      : undefined;
+
+  return platformPart && archPart ? `${platformPart}-${archPart}` : undefined;
+}
+
+function getBundledShimPath(context: vscode.ExtensionContext): string | undefined {
+  const platformDir = getShimPlatformDir();
+  if (!platformDir) {
+    return undefined;
+  }
+
+  const executableName = process.platform === 'win32' ? 'codex-switcher-shim.exe' : 'codex-switcher-shim';
+  return path.join(context.extensionUri.fsPath, 'bin', platformDir, executableName);
+}
+
+function getWrapperProbePaths(context: vscode.ExtensionContext): { dir: string; wrapperPath: string; legacyWindowsWrapperPath: string; legacyCommandWrapperPath: string; configPath: string; runtimeMappingPath: string; logPath: string } {
+  const dir = path.join(context.globalStorageUri.fsPath, WRAPPER_PROBE_DIR_NAME);
+  const executableName = process.platform === 'win32'
+    ? `codex-switcher-shim-${SHIM_BUILD_ID}.exe`
+    : `codex-switcher-shim-${SHIM_BUILD_ID}`;
+  return {
+    dir,
+    wrapperPath: path.join(dir, executableName),
+    legacyWindowsWrapperPath: path.join(dir, 'codex-switcher-shim.exe'),
+    legacyCommandWrapperPath: path.join(dir, 'codex-switcher-wrapper.cmd'),
+    configPath: path.join(dir, WRAPPER_PROBE_CONFIG_NAME),
+    runtimeMappingPath: path.join(dir, WRAPPER_PROBE_RUNTIME_MAP_NAME),
+    logPath: path.join(dir, WRAPPER_PROBE_LOG_NAME)
+  };
+}
+
+function isWrapperProbeCliPath(context: vscode.ExtensionContext, cliPath: string | undefined): boolean {
+  if (!cliPath) {
+    return false;
+  }
+
+  const { dir, wrapperPath, legacyWindowsWrapperPath, legacyCommandWrapperPath } = getWrapperProbePaths(context);
+  const normalizedCliPath = path.resolve(cliPath).toLowerCase();
+  const normalizedWrapperDir = path.resolve(dir).toLowerCase();
+  const cliName = path.basename(cliPath).toLowerCase();
+  return normalizedCliPath === path.resolve(wrapperPath).toLowerCase() ||
+    normalizedCliPath === path.resolve(legacyWindowsWrapperPath).toLowerCase() ||
+    normalizedCliPath === path.resolve(legacyCommandWrapperPath).toLowerCase() ||
+    (
+      path.dirname(path.resolve(cliPath)).toLowerCase() === normalizedWrapperDir &&
+      /^codex-switcher-shim-.+(\.exe)?$/.test(cliName)
+    );
+}
+
+function getWrapperProbeExecutableName(installId: string): string {
+  return process.platform === 'win32'
+    ? `codex-switcher-shim-${installId}.exe`
+    : `codex-switcher-shim-${installId}`;
+}
+
+function createWrapperProbeInstallId(): string {
+  const stamp = new Date().toISOString().replace(/[^0-9A-Za-z]/g, '');
+  return `${SHIM_BUILD_ID}-${process.pid}-${stamp}`;
+}
+
+async function installShimExecutableWithoutOverwrite(context: vscode.ExtensionContext, bundledShimPath: string): Promise<string> {
+  const paths = getWrapperProbePaths(context);
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const installId = attempt === 0
+      ? createWrapperProbeInstallId()
+      : `${createWrapperProbeInstallId()}-${attempt + 1}`;
+    const targetPath = path.join(paths.dir, getWrapperProbeExecutableName(installId));
+    try {
+      await fs.copyFile(bundledShimPath, targetPath, fscore.constants.COPYFILE_EXCL);
+      if (process.platform !== 'win32') {
+        await fs.chmod(targetPath, 0o755);
+      }
+      return targetPath;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error('Could not allocate a unique Codex wrapper probe shim path.');
+}
+
+function getProfileCodexHome(context: vscode.ExtensionContext, profileId: string): string {
+  return path.join(context.globalStorageUri.fsPath, PROFILE_HOMES_DIR_NAME, profileId);
+}
+
+function getSharedSessionsPath(context: vscode.ExtensionContext): string {
+  return path.join(context.globalStorageUri.fsPath, SHARED_CODEX_DIR_NAME, SESSIONS_DIR_NAME);
+}
+
+async function safeLstat(filePath: string): Promise<fscore.Stats | undefined> {
+  try {
+    return await fs.lstat(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+async function resolveRealPath(filePath: string): Promise<string | undefined> {
+  try {
+    return await fs.realpath(filePath);
+  } catch {
+    return undefined;
+  }
+}
+
+function sameResolvedPath(left: string | undefined, right: string | undefined): boolean {
+  if (!left || !right) {
+    return false;
+  }
+
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return process.platform === 'win32'
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+async function mergeDirectoryFilesWithoutOverwrite(sourceDir: string, targetDir: string): Promise<number> {
+  let entries: fscore.Dirent[];
+  try {
+    entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  await fs.mkdir(targetDir, { recursive: true });
+  let copied = 0;
+
+  for (const entry of entries) {
+    const sourcePath = path.join(sourceDir, entry.name);
+    const targetPath = path.join(targetDir, entry.name);
+
+    if (entry.isDirectory()) {
+      copied += await mergeDirectoryFilesWithoutOverwrite(sourcePath, targetPath);
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      continue;
+    }
+
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    try {
+      await fs.copyFile(sourcePath, targetPath, fscore.constants.COPYFILE_EXCL);
+      copied += 1;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        output.appendLine(`Skipped copying Codex session file from ${sourcePath}: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  return copied;
+}
+
+async function backupExistingSessionsPath(sessionsPath: string): Promise<void> {
+  const parent = path.dirname(sessionsPath);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let backupPath = path.join(parent, `${SESSIONS_DIR_NAME}.migrated-${stamp}`);
+
+  for (let attempt = 2; await safeExists(backupPath); attempt += 1) {
+    backupPath = path.join(parent, `${SESSIONS_DIR_NAME}.migrated-${stamp}-${attempt}`);
+  }
+
+  await fs.rename(sessionsPath, backupPath);
+  output.appendLine(`Moved existing profile sessions directory to ${backupPath} after merging it into shared Codex history.`);
+}
+
+async function linkSessionsDirectory(profileSessionsPath: string, sharedSessionsPath: string): Promise<void> {
+  try {
+    await fs.symlink(sharedSessionsPath, profileSessionsPath, process.platform === 'win32' ? 'junction' : 'dir');
+  } catch (error) {
+    output.appendLine(`Could not link profile sessions to shared Codex history; falling back to a copied sessions directory: ${(error as Error).message}`);
+    await fs.mkdir(profileSessionsPath, { recursive: true });
+    await mergeDirectoryFilesWithoutOverwrite(sharedSessionsPath, profileSessionsPath);
+  }
+}
+
+async function ensureSharedSessionsForProfileHome(context: vscode.ExtensionContext, codexHome: string): Promise<void> {
+  const sharedSessionsPath = getSharedSessionsPath(context);
+  const profileSessionsPath = path.join(codexHome, SESSIONS_DIR_NAME);
+  await fs.mkdir(sharedSessionsPath, { recursive: true });
+
+  const legacySessionsPath = getSessionsPath(getResolvedCodexHome());
+  if (!sameResolvedPath(await resolveRealPath(legacySessionsPath), await resolveRealPath(sharedSessionsPath))) {
+    const copied = await mergeDirectoryFilesWithoutOverwrite(legacySessionsPath, sharedSessionsPath);
+    if (copied > 0) {
+      output.appendLine(`Merged ${copied} legacy Codex session file(s) into shared history.`);
+    }
+  }
+
+  const existing = await safeLstat(profileSessionsPath);
+  if (!existing) {
+    await linkSessionsDirectory(profileSessionsPath, sharedSessionsPath);
+    return;
+  }
+
+  const profileRealPath = await resolveRealPath(profileSessionsPath);
+  const sharedRealPath = await resolveRealPath(sharedSessionsPath);
+  if (sameResolvedPath(profileRealPath, sharedRealPath)) {
+    return;
+  }
+
+  if (existing.isDirectory()) {
+    const copied = await mergeDirectoryFilesWithoutOverwrite(profileSessionsPath, sharedSessionsPath);
+    if (copied > 0) {
+      output.appendLine(`Merged ${copied} profile Codex session file(s) into shared history.`);
+    }
+    await backupExistingSessionsPath(profileSessionsPath);
+    await linkSessionsDirectory(profileSessionsPath, sharedSessionsPath);
+    return;
+  }
+
+  output.appendLine(`Profile sessions path exists but is not a directory: ${profileSessionsPath}. Leaving it unchanged.`);
+}
+
+async function materializeProfileCodexHome(context: vscode.ExtensionContext, profileId: string): Promise<string | undefined> {
+  const authData = await profileStore.loadAuthData(profileId);
+  if (!authData) {
+    return undefined;
+  }
+
+  const codexHome = getProfileCodexHome(context, profileId);
+  await fs.mkdir(codexHome, { recursive: true });
+  await syncAuthFile(path.join(codexHome, 'auth.json'), authData);
+  await syncCapSidFile(path.join(codexHome, 'cap_sid'), authData.capSid);
+  await syncCodexConfigFile(path.join(codexHome, 'config.toml'), authData.codexConfigText);
+  await ensureSharedSessionsForProfileHome(context, codexHome);
+  return codexHome;
+}
+
+function getRuntimeWindowPid(): string | undefined {
+  return String(process.pid);
+}
+
+async function readRuntimeWindowMappings(filePath: string): Promise<RuntimeWindowMappingsFile> {
+  try {
+    const raw = await fs.readFile(filePath, 'utf8');
+    const parsed = JSON.parse(raw) as Partial<RuntimeWindowMappingsFile>;
+    return {
+      version: 1,
+      windows: parsed && typeof parsed.windows === 'object' && !Array.isArray(parsed.windows)
+        ? parsed.windows as Record<string, RuntimeWindowMapping>
+        : {}
+    };
+  } catch {
+    return { version: 1, windows: {} };
+  }
+}
+
+async function resolveCurrentWindowProfileSelection(
+  context: vscode.ExtensionContext,
+  workspace: WorkspaceContextInfo | undefined,
+  mappings?: RuntimeWindowMappingsFile
+): Promise<{ profile?: ProfileSummary; source: RuntimeWindowMapping['source'] }> {
+  const preference = workspace ? getWorkspaceProfilePreferences(context)[workspace.workspaceKey] : undefined;
+  const preferredProfile = preference?.profileId ? await profileStore.getProfile(preference.profileId) : undefined;
+  if (preferredProfile) {
+    return { profile: preferredProfile, source: 'workspacePreference' };
+  }
+
+  const vscodePid = getRuntimeWindowPid();
+  const override = vscodePid ? getWindowProfileOverrides(context)[vscodePid] : undefined;
+  const overrideProfile = override?.profileId ? await profileStore.getProfile(override.profileId) : undefined;
+  if (overrideProfile) {
+    return { profile: overrideProfile, source: 'windowOverride' };
+  }
+
+  const existingProfileId = vscodePid && mappings ? mappings.windows[vscodePid]?.profileId : undefined;
+  const existingProfile = existingProfileId ? await profileStore.getProfile(existingProfileId) : undefined;
+  if (existingProfile) {
+    return { profile: existingProfile, source: 'windowRoute' };
+  }
+
+  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
+  return {
+    profile: activeProfile,
+    source: activeProfile ? 'activeProfile' : 'none'
+  };
+}
+
+async function getEffectiveActiveProfileId(context: vscode.ExtensionContext): Promise<string | undefined> {
+  const mappings = await readRuntimeWindowMappings(getWrapperProbePaths(context).runtimeMappingPath);
+  const workspace = await getPrimaryWorkspaceContext();
+  const selection = await resolveCurrentWindowProfileSelection(context, workspace, mappings);
+  return selection.profile?.id;
+}
+
+async function writeRuntimeWindowMapping(context: vscode.ExtensionContext): Promise<void> {
+  const vscodePid = getRuntimeWindowPid();
+  if (!vscodePid) {
+    return;
+  }
+
+  const paths = getWrapperProbePaths(context);
+  const workspace = await getPrimaryWorkspaceContext();
+  const mappings = await readRuntimeWindowMappings(paths.runtimeMappingPath);
+  const selection = await resolveCurrentWindowProfileSelection(context, workspace, mappings);
+  const selectedProfile = selection.profile;
+  const selectedProfileId = selectedProfile?.id;
+  const source = selection.source;
+  const codexHome = selectedProfileId ? await materializeProfileCodexHome(context, selectedProfileId) : undefined;
+
+  mappings.windows[vscodePid] = {
+    vscodePid,
+    workspaceKey: workspace?.workspaceKey,
+    workspaceLabel: workspace?.workspaceLabel,
+    rootPath: workspace?.rootPath,
+    remoteUrl: workspace?.remoteUrl,
+    profileId: selectedProfileId,
+    profileName: selectedProfile?.name,
+    codexHome,
+    source,
+    updatedAt: new Date().toISOString()
+  };
+
+  await fs.mkdir(paths.dir, { recursive: true });
+  await fs.writeFile(paths.runtimeMappingPath, `${JSON.stringify(mappings, null, 2)}\n`, 'utf8');
+}
+
+async function installWrapperProbe(context: vscode.ExtensionContext): Promise<void> {
+  const realCodexPath = getBundledCliExecutableForHost(process.platform, process.arch);
+  if (!realCodexPath) {
+    void vscode.window.showErrorMessage('Could not find the bundled Codex executable from the installed OpenAI Codex extension.');
+    return;
+  }
+
+  const bundledShimPath = getBundledShimPath(context);
+  if (!bundledShimPath || !(await safeExists(bundledShimPath))) {
+    void vscode.window.showErrorMessage(`Codex Switcher native shim is missing for ${process.platform}/${process.arch}. Build it with npm run build:shim before installing the probe.`);
+    return;
+  }
+
+  const paths = getWrapperProbePaths(context);
+  await fs.mkdir(paths.dir, { recursive: true });
+  const installedWrapperPath = await installShimExecutableWithoutOverwrite(context, bundledShimPath);
+  await fs.writeFile(paths.configPath, `${JSON.stringify({
+    realCodexPath,
+    logPath: paths.logPath,
+    runtimeMappingPath: paths.runtimeMappingPath
+  }, null, 2)}\n`, 'utf8');
+  await writeRuntimeWindowMapping(context);
+
+  const currentCli = getConfiguredOpenAiCliExecutable();
+  if (!isWrapperProbeCliPath(context, currentCli)) {
+    await context.globalState.update(WRAPPER_PROBE_PREVIOUS_CLI_KEY, currentCli ?? null);
+  }
+
+  await fs.rm(paths.legacyCommandWrapperPath, { force: true });
+
+  await vscode.workspace.getConfiguration('chatgpt').update('cliExecutable', installedWrapperPath, vscode.ConfigurationTarget.Global);
+
+  output.appendLine(`Installed Codex wrapper probe at ${installedWrapperPath}`);
+  output.appendLine(`Wrapper probe log: ${paths.logPath}`);
+
+  const choice = await vscode.window.showInformationMessage(
+    'Codex wrapper probe installed. Reload the extension host/window so OpenAI Codex starts through the wrapper and writes launch context to the probe log.',
+    'Restart Extension Host',
+    'Show Diagnostics'
+  );
+
+  if (choice === 'Restart Extension Host') {
+    await vscode.commands.executeCommand(CMD_RESTART_EXTENSION_HOST);
+  } else if (choice === 'Show Diagnostics') {
+    await showDiagnosticsPanel(context);
+  }
+}
+
+async function removeWrapperProbe(context: vscode.ExtensionContext): Promise<void> {
+  const currentCli = getConfiguredOpenAiCliExecutable();
+  const previous = context.globalState.get<string | null>(WRAPPER_PROBE_PREVIOUS_CLI_KEY, null);
+  const paths = getWrapperProbePaths(context);
+
+  if (isWrapperProbeCliPath(context, currentCli)) {
+    await vscode.workspace.getConfiguration('chatgpt').update('cliExecutable', previous, vscode.ConfigurationTarget.Global);
+  }
+
+  await context.globalState.update(WRAPPER_PROBE_PREVIOUS_CLI_KEY, undefined);
+  await fs.rm(paths.wrapperPath, { force: true });
+  await fs.rm(paths.configPath, { force: true });
+  await fs.rm(paths.runtimeMappingPath, { force: true });
+  await fs.rm(paths.legacyWindowsWrapperPath, { force: true }).catch(() => undefined);
+  await fs.rm(paths.legacyCommandWrapperPath, { force: true }).catch(() => undefined);
+  output.appendLine('Removed Codex wrapper probe configuration.');
+  void vscode.window.showInformationMessage('Codex wrapper probe removed. Restart the extension host/window for OpenAI Codex to launch without it.');
 }
 
 async function manageProfiles(context: vscode.ExtensionContext, placeholder = 'Manage Codex account and profile switching'): Promise<void> {
@@ -2319,20 +2876,6 @@ async function loginViaCodexCli(context: vscode.ExtensionContext): Promise<void>
   }
 }
 
-type UsagePanelProfile = {
-  id: string;
-  name: string;
-  email: string;
-  planType?: string;
-  snapshot?: UsageSnapshot;
-  history: UsageHistorySample[];
-  isStale: boolean;
-  isActive: boolean;
-  sourceLabel: string;
-  refreshStatus?: string;
-  updatedLabel: string;
-};
-
 function sanitizeTokenUsageForPanel(usage: TokenUsage | undefined): TokenUsage | undefined {
   if (!usage) {
     return undefined;
@@ -2408,6 +2951,46 @@ function sanitizeUsageHistorySamplesForPanel(history: UsageHistorySample[]): Usa
   }));
 }
 
+async function buildUsageDashboardState(
+  context: vscode.ExtensionContext,
+  panelState: { compareProfileId: string; historyRange: UsageHistoryRange }
+): Promise<UsageDashboardState> {
+  const activeProfileId = await getEffectiveActiveProfileId(context);
+  const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
+  if (!activeProfileId || !activeProfile) {
+    return {
+      kind: 'empty',
+      title: 'No profile selected',
+      message: 'Save or switch to a Codex profile first.'
+    };
+  }
+
+  const panelProfiles = await buildUsagePanelProfiles(context, activeProfileId);
+  const activePanelProfile = panelProfiles.find((profile) => profile.id === activeProfileId);
+  if (!activePanelProfile) {
+    return {
+      kind: 'empty',
+      title: 'No profile selected',
+      message: 'Save or switch to a Codex profile first.'
+    };
+  }
+
+  const compareProfileId = resolveUsageDetailsCompareProfileId(panelProfiles, activePanelProfile.id, panelState.compareProfileId);
+  return {
+    kind: 'ready',
+    generatedAt: new Date().toISOString(),
+    activeProfileId: activePanelProfile.id,
+    compareProfileId,
+    historyRange: coerceUsageHistoryRange(panelState.historyRange),
+    profiles: panelProfiles,
+    percentDisplayMode: getPercentDisplayMode(),
+    percentDisplaySuffixLong: getPercentDisplaySuffixLong(),
+    percentDisplaySuffixCompact: getPercentDisplaySuffixCompact(),
+    warningThreshold: getConfig().get<number>(USAGE_WARNING_THRESHOLD_SETTING, 70),
+    criticalThreshold: getConfig().get<number>(USAGE_CRITICAL_THRESHOLD_SETTING, 90)
+  };
+}
+
 async function buildUsagePanelProfiles(context: vscode.ExtensionContext, activeProfileId: string): Promise<UsagePanelProfile[]> {
   const profiles = await profileStore.listProfiles();
   return profiles.map((profile) => {
@@ -2435,67 +3018,78 @@ async function showUsageDetailsPanel(context: vscode.ExtensionContext): Promise<
     'codexAccountSwitcherUsage',
     'Codex Usage Details',
     vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One,
-    { enableScripts: true }
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+      localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'out', 'webview', 'usage-dashboard')]
+    }
   );
+  panel.webview.html = buildUsageDashboardWebviewHtml(panel.webview, context.extensionUri);
 
   let selectedCompareProfileId = '';
   let selectedHistoryRange: UsageHistoryRange = 'week';
+  let currentState: UsageDashboardState | undefined;
+  let webviewReady = false;
 
   const renderPanel = async (): Promise<void> => {
-    const activeProfileId = await profileStore.getActiveProfileId();
-    const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
-    if (!activeProfileId || !activeProfile) {
-      panel.webview.html = buildUsageDetailsEmptyHtml('No profile selected', 'Save or switch to a Codex profile first.');
-      return;
-    }
-
-    const panelProfiles = await buildUsagePanelProfiles(context, activeProfileId);
-    const activePanelProfile = panelProfiles.find((profile) => profile.id === activeProfileId);
-    if (!activePanelProfile) {
-      panel.webview.html = buildUsageDetailsEmptyHtml('No profile selected', 'Save or switch to a Codex profile first.');
-      return;
-    }
-
-    selectedCompareProfileId = resolveUsageDetailsCompareProfileId(panelProfiles, activePanelProfile.id, selectedCompareProfileId);
-    panel.webview.html = buildUsageDetailsHtml(panel.webview, activePanelProfile, panelProfiles, {
+    currentState = await buildUsageDashboardState(context, {
       compareProfileId: selectedCompareProfileId,
       historyRange: selectedHistoryRange
     });
+    if (currentState.kind === 'ready') {
+      selectedCompareProfileId = currentState.compareProfileId;
+      selectedHistoryRange = currentState.historyRange;
+    }
+
+    if (webviewReady) {
+      const renderMessage: UsageDashboardToWebviewMessage = { type: 'render', state: currentState };
+      await panel.webview.postMessage(renderMessage);
+    }
   };
 
   await renderPanel();
 
   panel.webview.onDidReceiveMessage(async (message) => {
-    if (!message || typeof message !== 'object') {
+    if (!message || typeof message !== 'object' || typeof (message as { type?: unknown }).type !== 'string') {
       return;
     }
 
-    if (message.type === 'switchProfile' && typeof message.profileId === 'string') {
-      await switchToProfile(message.profileId, context);
+    const payload = message as UsageDashboardFromWebviewMessage;
+
+    if (payload.type === 'ready') {
+      webviewReady = true;
+      if (currentState) {
+        const renderMessage: UsageDashboardToWebviewMessage = { type: 'render', state: currentState };
+        await panel.webview.postMessage(renderMessage);
+      }
+      return;
+    }
+
+    if (payload.type === 'switchProfile' && typeof payload.profileId === 'string') {
+      await switchToProfile(payload.profileId, context);
       panel.dispose();
       return;
     }
 
-    if (message.type === 'setCompareProfile' && typeof message.profileId === 'string') {
-      selectedCompareProfileId = message.profileId;
+    if (payload.type === 'setCompareProfile' && typeof payload.profileId === 'string') {
+      selectedCompareProfileId = payload.profileId;
       await renderPanel();
       return;
     }
 
-    if (message.type === 'setHistoryRange') {
-      selectedHistoryRange = coerceUsageHistoryRange(message.historyRange);
+    if (payload.type === 'setHistoryRange') {
+      selectedHistoryRange = coerceUsageHistoryRange(payload.historyRange);
       await renderPanel();
       return;
     }
 
-    if (message.type === 'refreshUsage') {
+    if (payload.type === 'refreshUsage') {
       await refreshUsageAndStatus(context);
       await renderPanel();
     }
   });
 }
 
-type UsageHistoryRange = 'day' | 'week' | 'month' | 'year';
 type UsageDetailsPanelState = {
   compareProfileId: string;
   historyRange: UsageHistoryRange;
@@ -3334,7 +3928,7 @@ async function repairProfiles(context: vscode.ExtensionContext): Promise<void> {
 }
 
 async function showDiagnosticsPanel(context: vscode.ExtensionContext): Promise<void> {
-  const activeProfileId = await profileStore.getActiveProfileId();
+  const activeProfileId = await getEffectiveActiveProfileId(context);
   const activeProfile = activeProfileId ? await profileStore.getProfile(activeProfileId) : undefined;
   const activeSnapshot = activeProfileId ? getUsageCache(context)[activeProfileId]?.snapshot : undefined;
   const activeSecret = activeProfileId ? await profileStore.loadAuthData(activeProfileId) : undefined;
@@ -3343,7 +3937,11 @@ async function showDiagnosticsPanel(context: vscode.ExtensionContext): Promise<v
   const configPath = getResolvedCodexConfigPath();
   const capSidPath = getResolvedCapSidPath();
   const sessionsPath = getSessionsPath(codexHome);
+  const sharedSessionsPath = getSharedSessionsPath(context);
   const cliSpec = await getCodexCliCommandSpec(['login'], getCodexLoginCommandText());
+  const wrapperProbePaths = getWrapperProbePaths(context);
+  const configuredOpenAiCli = getConfiguredOpenAiCliExecutable();
+  const wrapperProbeInstalled = isWrapperProbeCliPath(context, configuredOpenAiCli);
 
   const diagnostics = {
     codexHome,
@@ -3351,6 +3949,7 @@ async function showDiagnosticsPanel(context: vscode.ExtensionContext): Promise<v
     configPath,
     capSidPath,
     sessionsPath,
+    sharedSessionsPath,
     storageModeConfigured: getConfig().get<string>(STORAGE_MODE_SETTING, 'auto'),
     storageModeEffective: profileStore.getEffectiveStorageMode(),
     storageRoot: profileStore.getStorageRootPath(),
@@ -3361,6 +3960,17 @@ async function showDiagnosticsPanel(context: vscode.ExtensionContext): Promise<v
     wslAuthPathMode: shouldUseWslAuthPath(),
     cliSource: cliSpec.source,
     cliCommand: [cliSpec.shellPath, ...cliSpec.shellArgs].join(' '),
+    openAiCliExecutable: configuredOpenAiCli ?? 'Default bundled Codex executable',
+    wrapperProbeInstalled,
+    wrapperProbePath: wrapperProbePaths.wrapperPath,
+    wrapperProbeConfigPath: wrapperProbePaths.configPath,
+    wrapperProbeConfigExists: await safeExists(wrapperProbePaths.configPath),
+    wrapperProbeRuntimeMappingPath: wrapperProbePaths.runtimeMappingPath,
+    wrapperProbeRuntimeMappingExists: await safeExists(wrapperProbePaths.runtimeMappingPath),
+    wrapperProbeRuntimeMappingLastEntry: await readRuntimeWindowMappingSummary(wrapperProbePaths.runtimeMappingPath),
+    wrapperProbeLogPath: wrapperProbePaths.logPath,
+    wrapperProbeLogExists: await safeExists(wrapperProbePaths.logPath),
+    wrapperProbeLastEntry: await readLastNonEmptyLine(wrapperProbePaths.logPath),
     lastRefresh: lastUsageRefreshDiagnostic ? formatRefreshDiagnostic(lastUsageRefreshDiagnostic) : 'No refresh recorded yet',
     activeProfileName: activeProfile ? getProfileDisplayName(activeProfile) : 'None',
     activeProfileEmail: activeProfile ? getProfileDisplayEmail(activeProfile.email) : 'Unknown',
@@ -3372,6 +3982,7 @@ async function showDiagnosticsPanel(context: vscode.ExtensionContext): Promise<v
     configExists: await safeExists(configPath),
     capSidExists: await safeExists(capSidPath),
     sessionsPathExists: await safeExists(sessionsPath),
+    sharedSessionsPathExists: await safeExists(sharedSessionsPath),
     codexHomeExists: await safeExists(codexHome),
     profilesFileExists: await safeExists(profileStore.getProfilesFilePath()),
     remoteName: vscode.env.remoteName ?? 'local'
@@ -3395,6 +4006,7 @@ function buildDiagnosticsHtml(diagnostics: {
   configPath: string;
   capSidPath: string;
   sessionsPath: string;
+  sharedSessionsPath: string;
   storageModeConfigured: string;
   storageModeEffective: string;
   storageRoot: string;
@@ -3405,6 +4017,17 @@ function buildDiagnosticsHtml(diagnostics: {
   wslAuthPathMode: boolean;
   cliSource: string;
   cliCommand: string;
+  openAiCliExecutable: string;
+  wrapperProbeInstalled: boolean;
+  wrapperProbePath: string;
+  wrapperProbeConfigPath: string;
+  wrapperProbeConfigExists: boolean;
+  wrapperProbeRuntimeMappingPath: string;
+  wrapperProbeRuntimeMappingExists: boolean;
+  wrapperProbeRuntimeMappingLastEntry: string;
+  wrapperProbeLogPath: string;
+  wrapperProbeLogExists: boolean;
+  wrapperProbeLastEntry: string;
   lastRefresh: string;
   activeProfileName: string;
   activeProfileEmail: string;
@@ -3416,6 +4039,7 @@ function buildDiagnosticsHtml(diagnostics: {
   configExists: boolean;
   capSidExists: boolean;
   sessionsPathExists: boolean;
+  sharedSessionsPathExists: boolean;
   codexHomeExists: boolean;
   profilesFileExists: boolean;
   remoteName: string;
@@ -3482,6 +4106,14 @@ function buildDiagnosticsHtml(diagnostics: {
               ${item('WSL auth path mode', bool(diagnostics.wslAuthPathMode))}
               ${item('CLI source', diagnostics.cliSource)}
               ${item('CLI command', diagnostics.cliCommand)}
+              ${item('OpenAI cliExecutable', diagnostics.openAiCliExecutable)}
+              ${item('Wrapper probe installed', bool(diagnostics.wrapperProbeInstalled))}
+              ${item('Wrapper probe path', diagnostics.wrapperProbePath)}
+              ${item('Wrapper probe config', `${diagnostics.wrapperProbeConfigPath} (${bool(diagnostics.wrapperProbeConfigExists)})`)}
+              ${item('Wrapper runtime map', `${diagnostics.wrapperProbeRuntimeMappingPath} (${bool(diagnostics.wrapperProbeRuntimeMappingExists)})`)}
+              ${item('This window route', diagnostics.wrapperProbeRuntimeMappingLastEntry)}
+              ${item('Wrapper probe log', `${diagnostics.wrapperProbeLogPath} (${bool(diagnostics.wrapperProbeLogExists)})`)}
+              ${item('Last wrapper invocation', diagnostics.wrapperProbeLastEntry)}
               ${item('Last refresh', diagnostics.lastRefresh)}
             </table>
           </section>
@@ -3504,6 +4136,7 @@ function buildDiagnosticsHtml(diagnostics: {
               ${item('config.toml', `${diagnostics.configPath} (${bool(diagnostics.configExists)})`)}
               ${item('cap_sid', `${diagnostics.capSidPath} (${bool(diagnostics.capSidExists)})`)}
               ${item('sessions', `${diagnostics.sessionsPath} (${bool(diagnostics.sessionsPathExists)})`)}
+              ${item('shared sessions', `${diagnostics.sharedSessionsPath} (${bool(diagnostics.sharedSessionsPathExists)})`)}
             </table>
           </section>
           <section class="card">
@@ -3525,6 +4158,8 @@ function buildDiagnosticsHealth(diagnostics: {
   usageSourceMode: UsageSourceMode;
   watcherActive: boolean;
   wslAuthPathMode: boolean;
+  wrapperProbeInstalled: boolean;
+  wrapperProbeLogExists: boolean;
   lastRefresh: string;
   activeProfileName: string;
   activeProfileSecretExists: boolean;
@@ -3561,6 +4196,15 @@ function buildDiagnosticsHealth(diagnostics: {
       title: 'WSL auth path mode is enabled but key WSL-backed files are missing',
       detail: 'The extension is resolving auth/config through WSL, but the expected auth.json or config.toml path is not present.',
       action: 'Confirm chatgpt.runCodexInWindowsSubsystemForLinux matches how Codex is actually running, then sign in again or disable WSL auth-path mode.'
+    });
+  }
+
+  if (diagnostics.wrapperProbeInstalled && !diagnostics.wrapperProbeLogExists) {
+    items.push({
+      severity: 'warning',
+      title: 'Wrapper probe is installed but has not logged an invocation yet',
+      detail: 'OpenAI Codex has not started through the wrapper since the probe was installed, or the extension host/window has not been restarted yet.',
+      action: 'Restart the extension host/window, open Codex, then refresh diagnostics.'
     });
   }
 

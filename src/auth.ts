@@ -304,13 +304,13 @@ function getBundledCliRelativeDir(platform: NodeJS.Platform, arch: string): stri
   return path.join('bin', `${platformPart}-${archPart}`);
 }
 
-function getConfiguredCliExecutable(): string | undefined {
+export function getConfiguredOpenAiCliExecutable(): string | undefined {
   const configured = vscode.workspace.getConfiguration('chatgpt').get<string | null>('cliExecutable', null);
   const trimmed = configured?.trim();
   return trimmed ? trimmed : undefined;
 }
 
-function getBundledCliExecutableForHost(platform: NodeJS.Platform, arch: string): string | undefined {
+export function getBundledCliExecutableForHost(platform: NodeJS.Platform, arch: string): string | undefined {
   const extension = vscode.extensions.getExtension('openai.chatgpt');
   if (!extension) {
     return undefined;
@@ -361,7 +361,7 @@ export function getCodexLoginCommandText(): string {
 }
 
 export async function getCodexCliCommandSpec(commandArgs: string[], displayText?: string): Promise<CodexCliLaunchSpec> {
-  const configuredCli = getConfiguredCliExecutable();
+  const configuredCli = getConfiguredOpenAiCliExecutable();
   const fallbackDisplayText = displayText ?? `codex ${commandArgs.join(' ')}`;
 
   if (shouldUseWslAuthPath()) {

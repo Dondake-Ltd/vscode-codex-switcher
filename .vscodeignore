@@ -3,11 +3,15 @@
 .vscode-test.mjs
 src/**
 **/*.ts
+**/*.tsx
 **/*.map
 *.zip
 *.vsix
 tmp_vsix_*/
 tmp_vsix_*
+webview-src/**
+shim/**
+scripts/**
 node_modules/**
 .git/**
 out/test/**
@@ -15,3 +19,4 @@ TESTING.md
 AGENTS.md
 TODO.md
 tsconfig.json
+tsconfig.webview.json

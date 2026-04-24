@@ -32,7 +32,7 @@ Civilization advances. Next stop: Mars.
 - Saved Codex profiles you can rename, delete, export, import, refresh, and reauthenticate.
 - Optional masking for profile names and email addresses in the UI when you are screen sharing or streaming.
 - Recovery tools for the inevitable moment when a token decides it no longer believes in tomorrow.
-- Optional safety checks that warn before switching while Codex appears busy, with an opt-out setting if you prefer manual control.
+- Optional safety checks that suppress low-usage auto-switching while Codex appears busy, without interrupting manual profile switches.
 - Optional workspace-aware profile prompts so repos can nudge you toward the profile they usually use, with a global off switch if that gets annoying.
 - Support for local setups, WSL setups, and remote/SSH workflows.
 
@@ -137,7 +137,7 @@ Most useful ones:
 - `storageMode`: choose how saved profiles are stored.
 - `statusBarSide`: put the switcher on the left or right.
 - `confirmBeforeSwitch`: add a confirmation step before switching.
-- `processSafetyChecksEnabled`: warn before switching while Codex appears active and suppress low-usage auto-switching while live Codex processes are detected.
+- `processSafetyChecksEnabled`: suppress low-usage auto-switching while live Codex processes are detected. Manual profile switches no longer show a process-activity warning.
 - `showUsageInStatusBar`: show/hide the usage monitor item.
 - `showUsageInSwitcher`: show/hide usage inside the picker.
 - `maskProfileNames`: hide saved profile names in status bar text, pickers, tooltips, dialogs, the usage panel, and diagnostics.
@@ -145,7 +145,7 @@ Most useful ones:
 - `usagePercentDisplay`: choose `remaining` or `used` percentages.
 - `usageSourceMode`: choose `auto`, `appServerOnly`, or `localOnly` usage refresh behavior.
 - `experimentalWebUsageProbeEnabled`: opt into an undocumented ChatGPT web usage probe; if it fails, the extension falls back to the supported app-server and local session sources.
-- `workspaceProfilePromptsEnabled`: let the extension remember a preferred profile for the current repo/workspace and suggest switching when that workspace usually uses a different profile.
+- `workspaceProfilePromptsEnabled`: opt in to letting the extension remember a preferred profile for the current repo/workspace and suggest switching when that workspace usually uses a different profile.
 - `usageColorsEnabled`: enable colored usage indicators.
 - `usageWarningColor` / `usageCriticalColor`: optional overrides for the warning/critical colors; leave unset for theme-aware defaults.
 - `usageRefreshIntervalSeconds`: control how often usage refreshes while VS Code is open.

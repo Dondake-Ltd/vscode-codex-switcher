@@ -1,365 +1,379 @@
 {
-    "name":  "vscode-codex-switcher",
-    "displayName":  "Codex Account Switcher",
-    "description":  "Switch Codex accounts and profiles from the status bar, store full auth payloads securely, preserve profile-specific state, and keep usage visible while you work.",
-    "version":  "0.3.4",
-    "publisher":  "DondakeLtd",
-    "license":  "MIT",
-    "icon":  "assets/icon.png",
-    "repository":  {
-                       "type":  "git",
-                       "url":  "https://github.com/Dondake-Ltd/vscode-codex-switcher.git"
-                   },
-    "bugs":  {
-                 "url":  "https://github.com/Dondake-Ltd/vscode-codex-switcher/issues"
-             },
-    "homepage":  "https://github.com/Dondake-Ltd/vscode-codex-switcher#readme",
-    "keywords":  [
-                     "codex",
-                     "openai",
-                     "account",
-                     "auth",
-                     "switcher",
-                     "profile",
-                     "profiles",
-                     "usage",
-                     "wsl",
-                     "ssh"
-                 ],
-    "engines":  {
-                    "vscode":  "^1.90.0"
+    "name": "vscode-codex-switcher",
+    "displayName": "Codex Account Switcher",
+    "description": "Switch Codex accounts and profiles from the status bar, store full auth payloads securely, preserve profile-specific state, and keep usage visible while you work.",
+    "version": "0.3.15",
+    "publisher": "DondakeLtd",
+    "license": "MIT",
+    "icon": "assets/icon.png",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Dondake-Ltd/vscode-codex-switcher.git"
+    },
+    "bugs": {
+        "url": "https://github.com/Dondake-Ltd/vscode-codex-switcher/issues"
+    },
+    "homepage": "https://github.com/Dondake-Ltd/vscode-codex-switcher#readme",
+    "keywords": [
+        "codex",
+        "openai",
+        "account",
+        "auth",
+        "switcher",
+        "profile",
+        "profiles",
+        "usage",
+        "wsl",
+        "ssh"
+    ],
+    "engines": {
+        "vscode": "^1.90.0"
+    },
+    "categories": [
+        "Other"
+    ],
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onStartupFinished",
+        "onCommand:codexAccountSwitcher.switchAccount",
+        "onCommand:codexAccountSwitcher.addAccount",
+        "onCommand:codexAccountSwitcher.deleteAccount",
+        "onCommand:codexAccountSwitcher.editAccounts",
+        "onCommand:codexAccountSwitcher.reloadWindow",
+        "onCommand:codexAccountSwitcher.exportActiveAuth",
+        "onCommand:codexAccountSwitcher.renameProfile",
+        "onCommand:codexAccountSwitcher.reauthenticateProfile",
+        "onCommand:codexAccountSwitcher.updateProfileFromCurrentAuth",
+        "onCommand:codexAccountSwitcher.importProfiles",
+        "onCommand:codexAccountSwitcher.exportProfiles",
+        "onCommand:codexAccountSwitcher.repairProfiles",
+        "onCommand:codexAccountSwitcher.showDiagnostics",
+        "onCommand:codexAccountSwitcher.loginWithCodexCli",
+        "onCommand:codexAccountSwitcher.manageProfiles",
+        "onCommand:codexAccountSwitcher.showUsageDetails",
+        "onCommand:codexAccountSwitcher.installWrapperProbe",
+        "onCommand:codexAccountSwitcher.removeWrapperProbe"
+    ],
+    "contributes": {
+        "commands": [
+            {
+                "command": "codexAccountSwitcher.switchAccount",
+                "title": "Codex Account Switcher: Switch Account"
+            },
+            {
+                "command": "codexAccountSwitcher.addAccount",
+                "title": "Codex Account Switcher: Add Account"
+            },
+            {
+                "command": "codexAccountSwitcher.deleteAccount",
+                "title": "Codex Account Switcher: Delete Account"
+            },
+            {
+                "command": "codexAccountSwitcher.editAccounts",
+                "title": "Codex Account Switcher: Edit Accounts"
+            },
+            {
+                "command": "codexAccountSwitcher.reloadWindow",
+                "title": "Codex Account Switcher: Reload Window"
+            },
+            {
+                "command": "codexAccountSwitcher.exportActiveAuth",
+                "title": "Codex Account Switcher: Export Active Auth"
+            },
+            {
+                "command": "codexAccountSwitcher.renameProfile",
+                "title": "Codex Account Switcher: Rename Profile"
+            },
+            {
+                "command": "codexAccountSwitcher.reauthenticateProfile",
+                "title": "Codex Account Switcher: Reauthenticate Profile"
+            },
+            {
+                "command": "codexAccountSwitcher.updateProfileFromCurrentAuth",
+                "title": "Codex Account Switcher: Update Profile From Current Auth"
+            },
+            {
+                "command": "codexAccountSwitcher.importProfiles",
+                "title": "Codex Account Switcher: Import Profiles"
+            },
+            {
+                "command": "codexAccountSwitcher.exportProfiles",
+                "title": "Codex Account Switcher: Export Profiles"
+            },
+            {
+                "command": "codexAccountSwitcher.repairProfiles",
+                "title": "Codex Account Switcher: Repair Saved Profiles"
+            },
+            {
+                "command": "codexAccountSwitcher.showDiagnostics",
+                "title": "Codex Account Switcher: Show Diagnostics"
+            },
+            {
+                "command": "codexAccountSwitcher.loginWithCodexCli",
+                "title": "Codex Account Switcher: Login With Codex CLI"
+            },
+            {
+                "command": "codexAccountSwitcher.manageProfiles",
+                "title": "Codex Account Switcher: Manage Accounts and Profiles"
+            },
+            {
+                "command": "codexAccountSwitcher.showUsageDetails",
+                "title": "Codex Account Switcher: Show Usage Details"
+            },
+            {
+                "command": "codexAccountSwitcher.installWrapperProbe",
+                "title": "Codex Account Switcher: Install Codex Wrapper Probe"
+            },
+            {
+                "command": "codexAccountSwitcher.removeWrapperProbe",
+                "title": "Codex Account Switcher: Remove Codex Wrapper Probe"
+            }
+        ],
+        "configuration": {
+            "title": "Codex Account Switcher",
+            "properties": {
+                "codexAccountSwitcher.codexHome": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Codex home directory. If empty, uses CODEX_HOME or defaults to ~/.codex. Also used when reading session usage data."
                 },
-    "categories":  [
-                       "Other"
-                   ],
-    "main":  "./out/extension.js",
-    "activationEvents":  [
-                             "onStartupFinished",
-                             "onCommand:codexAccountSwitcher.switchAccount",
-                             "onCommand:codexAccountSwitcher.addAccount",
-                             "onCommand:codexAccountSwitcher.deleteAccount",
-                             "onCommand:codexAccountSwitcher.editAccounts",
-                             "onCommand:codexAccountSwitcher.reloadWindow",
-                             "onCommand:codexAccountSwitcher.exportActiveAuth",
-                             "onCommand:codexAccountSwitcher.renameProfile",
-                             "onCommand:codexAccountSwitcher.reauthenticateProfile",
-                             "onCommand:codexAccountSwitcher.updateProfileFromCurrentAuth",
-                             "onCommand:codexAccountSwitcher.importProfiles",
-                             "onCommand:codexAccountSwitcher.exportProfiles",
-                             "onCommand:codexAccountSwitcher.repairProfiles",
-                             "onCommand:codexAccountSwitcher.showDiagnostics",
-                             "onCommand:codexAccountSwitcher.loginWithCodexCli",
-                             "onCommand:codexAccountSwitcher.manageProfiles",
-                             "onCommand:codexAccountSwitcher.showUsageDetails"
-                         ],
-    "contributes":  {
-                        "commands":  [
-                                         {
-                                             "command":  "codexAccountSwitcher.switchAccount",
-                                             "title":  "Codex Account Switcher: Switch Account"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.addAccount",
-                                             "title":  "Codex Account Switcher: Add Account"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.deleteAccount",
-                                             "title":  "Codex Account Switcher: Delete Account"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.editAccounts",
-                                             "title":  "Codex Account Switcher: Edit Accounts"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.reloadWindow",
-                                             "title":  "Codex Account Switcher: Reload Window"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.exportActiveAuth",
-                                             "title":  "Codex Account Switcher: Export Active Auth"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.renameProfile",
-                                             "title":  "Codex Account Switcher: Rename Profile"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.reauthenticateProfile",
-                                             "title":  "Codex Account Switcher: Reauthenticate Profile"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.updateProfileFromCurrentAuth",
-                                             "title":  "Codex Account Switcher: Update Profile From Current Auth"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.importProfiles",
-                                             "title":  "Codex Account Switcher: Import Profiles"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.exportProfiles",
-                                             "title":  "Codex Account Switcher: Export Profiles"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.repairProfiles",
-                                             "title":  "Codex Account Switcher: Repair Saved Profiles"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.showDiagnostics",
-                                             "title":  "Codex Account Switcher: Show Diagnostics"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.loginWithCodexCli",
-                                             "title":  "Codex Account Switcher: Login With Codex CLI"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.manageProfiles",
-                                             "title":  "Codex Account Switcher: Manage Accounts and Profiles"
-                                         },
-                                         {
-                                             "command":  "codexAccountSwitcher.showUsageDetails",
-                                             "title":  "Codex Account Switcher: Show Usage Details"
-                                         }
-                                     ],
-                        "configuration":  {
-                                              "title":  "Codex Account Switcher",
-                                              "properties":  {
-                                                                 "codexAccountSwitcher.codexHome":  {
-                                                                                                        "type":  "string",
-                                                                                                        "default":  "",
-                                                                                                        "description":  "Codex home directory. If empty, uses CODEX_HOME or defaults to ~/.codex. Also used when reading session usage data."
-                                                                                                    },
-                                                                 "codexAccountSwitcher.storageMode":  {
-                                                                                                          "type":  "string",
-                                                                                                          "enum":  [
-                                                                                                                       "auto",
-                                                                                                                       "secretStorage",
-                                                                                                                       "remoteFiles"
-                                                                                                                   ],
-                                                                                                          "default":  "auto",
-                                                                                                          "markdownDescription":  "Where saved profiles keep their auth payloads. `secretStorage` is preferred locally. `remoteFiles` is useful for shared SSH/remote extension hosts. `auto` chooses `remoteFiles` in SSH remote sessions and `secretStorage` otherwise."
-                                                                                                      },
-                                                                 "codexAccountSwitcher.accounts":  {
-                                                                                                       "type":  "array",
-                                                                                                       "default":  [
-
-                                                                                                                   ],
-                                                                                                       "description":  "Legacy named account snapshots used only for one-time migration to the profile store.",
-                                                                                                       "items":  {
-                                                                                                                     "type":  "object",
-                                                                                                                     "properties":  {
-                                                                                                                                        "name":  {
-                                                                                                                                                     "type":  "string",
-                                                                                                                                                     "description":  "Unique account name."
-                                                                                                                                                 },
-                                                                                                                                        "authFile":  {
-                                                                                                                                                         "type":  "string",
-                                                                                                                                                         "description":  "Path to account snapshot auth file. Supports ${codexHome}."
-                                                                                                                                                     },
-                                                                                                                                        "enabled":  {
-                                                                                                                                                        "type":  "boolean",
-                                                                                                                                                        "default":  true,
-                                                                                                                                                        "description":  "Whether this account can be selected."
-                                                                                                                                                    }
-                                                                                                                                    },
-                                                                                                                     "required":  [
-                                                                                                                                      "name",
-                                                                                                                                      "authFile"
-                                                                                                                                  ]
-                                                                                                                 }
-                                                                                                   },
-                                                                 "codexAccountSwitcher.activeAccount":  {
-                                                                                                            "type":  "string",
-                                                                                                            "default":  "",
-                                                                                                            "markdownDescription":  "Legacy active account name used only for one-time migration to the profile store."
-                                                                                                        },
-                                                                 "codexAccountSwitcher.confirmBeforeSwitch":  {
-                                                                                                                  "type":  "boolean",
-                                                                                                                  "default":  false,
-                                                                                                                  "description":  "Ask for confirmation before switching account."
-                                                                                                              },
-                                                                 "codexAccountSwitcher.backupActiveAuth":  {
-                                                                                                               "type":  "boolean",
-                                                                                                               "default":  true,
-                                                                                                               "description":  "Backup active auth.json before switch."
-                                                                                                           },
-                                                                 "codexAccountSwitcher.ensureFileBasedCreds":  {
-                                                                                                                   "type":  "boolean",
-                                                                                                                   "default":  false,
-                                                                                                                   "description":  "Warn that account swapping requires file-based Codex credentials."
-                                                                                                               },
-                                                                 "codexAccountSwitcher.processSafetyChecksEnabled":  {
-                                                                                                                      "type":  "boolean",
-                                                                                                                      "default":  true,
-                                                                                                                      "description":  "Warn before switching profiles when Codex appears to be running, and suppress low-usage auto-switching while Codex looks active."
-                                                                                                                  },
-                                                                 "codexAccountSwitcher.experimentalWebUsageProbeEnabled":  {
-                                                                                                                               "type":  "boolean",
-                                                                                                                               "default":  false,
-                                                                                                                               "description":  "Enable an experimental usage probe against undocumented ChatGPT web endpoints. When it fails, usage refresh falls back to the supported app-server and local session sources."
-                                                                                                                           },
-                                                                 "codexAccountSwitcher.workspaceProfilePromptsEnabled":  {
-                                                                                                                             "type":  "boolean",
-                                                                                                                             "default":  true,
-                                                                                                                             "description":  "Suggest switching to a preferred profile when a workspace/repository is usually associated with a different saved profile, and offer to remember profile choices per workspace."
-                                                                                                                         },
-                                                                 "codexAccountSwitcher.maskProfileNames":  {
-                                                                                                             "type":  "boolean",
-                                                                                                             "default":  false,
-                                                                                                             "description":  "Mask saved profile/account names in the UI without changing the stored profile data."
-                                                                                                         },
-                                                                 "codexAccountSwitcher.maskProfileEmails":  {
-                                                                                                              "type":  "boolean",
-                                                                                                              "default":  false,
-                                                                                                              "description":  "Mask profile email addresses in the UI without changing the stored profile data."
-                                                                                                          },
-                                                                 "codexAccountSwitcher.reloadTarget":  {
-                                                                                                           "type":  "string",
-                                                                                                           "enum":  [
-                                                                                                                        "extensionHost",
-                                                                                                                        "window"
-                                                                                                                    ],
-                                                                                                           "default":  "extensionHost",
-                                                                                                           "markdownDescription":  "Reload strategy after switching: `extensionHost` (recommended, less disruptive) or full `window` reload."
-                                                                                                       },
-                                                                 "codexAccountSwitcher.importProfileSwitchBehavior":  {
-                                                                                                                        "type":  "string",
-                                                                                                                        "enum":  [
-                                                                                                                                     "ask",
-                                                                                                                                     "always",
-                                                                                                                                     "never"
-                                                                                                                                 ],
-                                                                                                                        "default":  "ask",
-                                                                                                                        "markdownDescription":  "What to do after importing or linking a profile: `ask` whether to switch, `always` switch immediately, or `never` keep the current active profile."
-                                                                                                                    },
-                                                                 "codexAccountSwitcher.lowUsageProfileSwitchBehavior":  {
-                                                                                                                            "type":  "string",
-                                                                                                                            "enum":  [
-                                                                                                                                         "off",
-                                                                                                                                         "ask",
-                                                                                                                                         "auto"
-                                                                                                                                     ],
-                                                                                                                            "default":  "ask",
-                                                                                                                            "markdownDescription":  "What to do when the active profile is nearly out of usage and another profile has a recent cached usage snapshot with more capacity: `off`, `ask`, or `auto`."
-                                                                                                                        },
-                                                                 "codexAccountSwitcher.lowUsageSwitchThresholdPercent":  {
-                                                                                                                              "type":  "number",
-                                                                                                                              "default":  5,
-                                                                                                                              "minimum":  0,
-                                                                                                                              "maximum":  100,
-                                                                                                                              "description":  "Remaining usage percentage threshold at or below which the extension suggests switching to another profile."
-                                                                                                                          },
-                                                                 "codexAccountSwitcher.lowUsageCandidateFreshnessSeconds":  {
-                                                                                                                                "type":  "number",
-                                                                                                                                "default":  600,
-                                                                                                                                "minimum":  30,
-                                                                                                                                "description":  "How recent another profile's cached usage data must be before it is considered a safe switch candidate."
-                                                                                                                            },
-                                                                 "codexAccountSwitcher.lowUsageAutoSwitchCountdownSeconds":  {
-                                                                                                                                  "type":  "number",
-                                                                                                                                  "default":  10,
-                                                                                                                                  "minimum":  3,
-                                                                                                                                  "description":  "Countdown length before auto-switch executes in `lowUsageProfileSwitchBehavior = auto` mode."
-                                                                                                                              },
-                                                                 "codexAccountSwitcher.showUsageInStatusBar":  {
-                                                                                                                   "type":  "boolean",
-                                                                                                                   "default":  true,
-                                                                                                                   "description":  "Show last-known 5h and weekly usage in the status bar for the active account/profile."
-                                                                                                               },
-                                                                 "codexAccountSwitcher.showUsageInSwitcher":  {
-                                                                                                                  "type":  "boolean",
-                                                                                                                  "default":  true,
-                                                                                                                  "description":  "Show last-known 5h and weekly usage in the account switch picker."
-                                                                                                              },
-                                                                 "codexAccountSwitcher.usagePercentDisplay":  {
-                                                                                                                  "type":  "string",
-                                                                                                                  "enum":  [
-                                                                                                                               "remaining",
-                                                                                                                               "used"
-                                                                                                                           ],
-                                                                                                                  "default":  "remaining",
-                                                                                                                  "description":  "Whether percentages show remaining allowance or used percentage in the status bar, picker, tooltip, and usage details panel."
-                                                                                                              },
-                                                                 "codexAccountSwitcher.usageColorsEnabled":  {
-                                                                                                                 "type":  "boolean",
-                                                                                                                 "default":  true,
-                                                                                                                 "description":  "Enable colored usage indicators based on 5h/weekly usage percentage."
-                                                                                                             },
-                                                                 "codexAccountSwitcher.usageWarningThreshold":  {
-                                                                                                                    "type":  "number",
-                                                                                                                    "default":  70,
-                                                                                                                    "minimum":  0,
-                                                                                                                    "maximum":  100,
-                                                                                                                    "description":  "Usage percentage threshold where warning coloring starts."
-                                                                                                                },
-                                                                 "codexAccountSwitcher.usageWarningColor":  {
-                                                                                                                "type":  "string",
-                                                                                                                "default":  "",
-                                                                                                                "description":  "Optional override for warning-level usage indicators. Leave empty to use theme-aware defaults."
-                                                                                                            },
-                                                                 "codexAccountSwitcher.usageCriticalThreshold":  {
-                                                                                                                     "type":  "number",
-                                                                                                                     "default":  90,
-                                                                                                                     "minimum":  0,
-                                                                                                                     "maximum":  100,
-                                                                                                                     "description":  "Usage percentage threshold where critical coloring starts."
-                                                                                                                 },
-                                                                 "codexAccountSwitcher.usageCriticalColor":  {
-                                                                                                                 "type":  "string",
-                                                                                                                 "default":  "",
-                                                                                                                 "description":  "Optional override for critical-level usage indicators. Leave empty to use theme-aware defaults."
-                                                                                                             },
-                                                                 "codexAccountSwitcher.usageRefreshIntervalSeconds":  {
-                                                                                                                          "type":  "number",
-                                                                                                                          "default":  30,
-                                                                                                                          "minimum":  15,
-                                                                                                                          "description":  "How often to refresh Codex rate-limit usage while VS Code is open. Live app-server data is preferred, with local session files as fallback."
-                                                                                                                      },
-                                                                 "codexAccountSwitcher.usageSourceMode":  {
-                                                                                                               "type":  "string",
-                                                                                                               "enum":  [
-                                                                                                                            "auto",
-                                                                                                                            "appServerOnly",
-                                                                                                                            "localOnly"
-                                                                                                                        ],
-                                                                                                               "default":  "auto",
-                                                                                                               "markdownDescription":  "Where usage refresh reads from: `auto` prefers Codex app-server and falls back to local session files, `appServerOnly` uses only Codex app-server, and `localOnly` skips app-server and reads only local session files. If `experimentalWebUsageProbeEnabled` is on, the extension tries the experimental web probe before the configured supported sources unless you have chosen `localOnly`."
-                                                                                                           },
-                                                                 "codexAccountSwitcher.statusBarSide":  {
-                                                                                                            "type":  "string",
-                                                                                                            "enum":  [
-                                                                                                                         "right",
-                                                                                                                         "left"
-                                                                                                                     ],
-                                                                                                            "default":  "right",
-                                                                                                            "markdownDescription":  "Status bar side for the account switcher item."
-                                                                                                        }
-                                                             }
-                                          },
-                        "menus":  {
-                                      "statusBar/item/context":  [
-                                                                     {
-                                                                         "command":  "codexAccountSwitcher.switchAccount",
-                                                                         "when":  "true",
-                                                                         "group":  "navigation"
-                                                                     }
-                                                                 ]
-                                  }
-                    },
-    "scripts":  {
-                    "vscode:prepublish":  "npm run compile",
-                    "compile":  "tsc -p ./",
-                    "watch":  "tsc -watch -p ./",
-                    "test:unit":  "npm run compile \u0026\u0026 node --test out/test/auth.test.js out/test/core.test.js out/test/usage.test.js out/test/transferCrypto.test.js",
-                    "test:integration":  "npm run compile \u0026\u0026 node .vscode-test.mjs",
-                    "test:all":  "npm run test:unit \u0026\u0026 npm run test:integration",
-                    "test":  "npm run test:unit",
-                    "package":  "npm run compile \u0026\u0026 npx @vscode/vsce package"
+                "codexAccountSwitcher.storageMode": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "secretStorage",
+                        "remoteFiles"
+                    ],
+                    "default": "auto",
+                    "markdownDescription": "Where saved profiles keep their auth payloads. `secretStorage` is preferred locally. `remoteFiles` is useful for shared SSH/remote extension hosts. `auto` chooses `remoteFiles` in SSH remote sessions and `secretStorage` otherwise."
                 },
-    "devDependencies":  {
-                            "@types/mocha":  "^10.0.7",
-                            "@types/node":  "^20.14.10",
-                            "@types/vscode":  "^1.90.0",
-                            "@vscode/test-electron":  "^2.4.1",
-                            "mocha":  "^10.7.0",
-                            "typescript":  "^5.5.4"
-                        }
+                "codexAccountSwitcher.accounts": {
+                    "type": "array",
+                    "default": [],
+                    "description": "Legacy named account snapshots used only for one-time migration to the profile store.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {
+                                "type": "string",
+                                "description": "Unique account name."
+                            },
+                            "authFile": {
+                                "type": "string",
+                                "description": "Path to account snapshot auth file. Supports ${codexHome}."
+                            },
+                            "enabled": {
+                                "type": "boolean",
+                                "default": true,
+                                "description": "Whether this account can be selected."
+                            }
+                        },
+                        "required": [
+                            "name",
+                            "authFile"
+                        ]
+                    }
+                },
+                "codexAccountSwitcher.activeAccount": {
+                    "type": "string",
+                    "default": "",
+                    "markdownDescription": "Legacy active account name used only for one-time migration to the profile store."
+                },
+                "codexAccountSwitcher.confirmBeforeSwitch": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Ask for confirmation before switching account."
+                },
+                "codexAccountSwitcher.backupActiveAuth": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Backup active auth.json before switch."
+                },
+                "codexAccountSwitcher.ensureFileBasedCreds": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Warn that account swapping requires file-based Codex credentials."
+                },
+                "codexAccountSwitcher.processSafetyChecksEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Suppress low-usage auto-switching while Codex looks active. Manual profile switches no longer show a process-activity warning."
+                },
+                "codexAccountSwitcher.experimentalWebUsageProbeEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Enable an experimental usage probe against undocumented ChatGPT web endpoints. When it fails, usage refresh falls back to the supported app-server and local session sources."
+                },
+                "codexAccountSwitcher.workspaceProfilePromptsEnabled": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Opt in to workspace/repository profile prompts that can remember a preferred profile for the current repo and suggest switching when that repo usually uses a different saved profile."
+                },
+                "codexAccountSwitcher.maskProfileNames": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Mask saved profile/account names in the UI without changing the stored profile data."
+                },
+                "codexAccountSwitcher.maskProfileEmails": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Mask profile email addresses in the UI without changing the stored profile data."
+                },
+                "codexAccountSwitcher.reloadTarget": {
+                    "type": "string",
+                    "enum": [
+                        "extensionHost",
+                        "window"
+                    ],
+                    "default": "extensionHost",
+                    "markdownDescription": "Reload strategy after switching: `extensionHost` (recommended, less disruptive) or full `window` reload."
+                },
+                "codexAccountSwitcher.importProfileSwitchBehavior": {
+                    "type": "string",
+                    "enum": [
+                        "ask",
+                        "always",
+                        "never"
+                    ],
+                    "default": "ask",
+                    "markdownDescription": "What to do after importing or linking a profile: `ask` whether to switch, `always` switch immediately, or `never` keep the current active profile."
+                },
+                "codexAccountSwitcher.lowUsageProfileSwitchBehavior": {
+                    "type": "string",
+                    "enum": [
+                        "off",
+                        "ask",
+                        "auto"
+                    ],
+                    "default": "ask",
+                    "markdownDescription": "What to do when the active profile is nearly out of usage and another profile has a recent cached usage snapshot with more capacity: `off`, `ask`, or `auto`."
+                },
+                "codexAccountSwitcher.lowUsageSwitchThresholdPercent": {
+                    "type": "number",
+                    "default": 5,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Remaining usage percentage threshold at or below which the extension suggests switching to another profile."
+                },
+                "codexAccountSwitcher.lowUsageCandidateFreshnessSeconds": {
+                    "type": "number",
+                    "default": 600,
+                    "minimum": 30,
+                    "description": "How recent another profile's cached usage data must be before it is considered a safe switch candidate."
+                },
+                "codexAccountSwitcher.lowUsageAutoSwitchCountdownSeconds": {
+                    "type": "number",
+                    "default": 10,
+                    "minimum": 3,
+                    "description": "Countdown length before auto-switch executes in `lowUsageProfileSwitchBehavior = auto` mode."
+                },
+                "codexAccountSwitcher.showUsageInStatusBar": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show last-known 5h and weekly usage in the status bar for the active account/profile."
+                },
+                "codexAccountSwitcher.showUsageInSwitcher": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show last-known 5h and weekly usage in the account switch picker."
+                },
+                "codexAccountSwitcher.usagePercentDisplay": {
+                    "type": "string",
+                    "enum": [
+                        "remaining",
+                        "used"
+                    ],
+                    "default": "remaining",
+                    "description": "Whether percentages show remaining allowance or used percentage in the status bar, picker, tooltip, and usage details panel."
+                },
+                "codexAccountSwitcher.usageColorsEnabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable colored usage indicators based on 5h/weekly usage percentage."
+                },
+                "codexAccountSwitcher.usageWarningThreshold": {
+                    "type": "number",
+                    "default": 70,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Usage percentage threshold where warning coloring starts."
+                },
+                "codexAccountSwitcher.usageWarningColor": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional override for warning-level usage indicators. Leave empty to use theme-aware defaults."
+                },
+                "codexAccountSwitcher.usageCriticalThreshold": {
+                    "type": "number",
+                    "default": 90,
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Usage percentage threshold where critical coloring starts."
+                },
+                "codexAccountSwitcher.usageCriticalColor": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Optional override for critical-level usage indicators. Leave empty to use theme-aware defaults."
+                },
+                "codexAccountSwitcher.usageRefreshIntervalSeconds": {
+                    "type": "number",
+                    "default": 30,
+                    "minimum": 15,
+                    "description": "How often to refresh Codex rate-limit usage while VS Code is open. Live app-server data is preferred, with local session files as fallback."
+                },
+                "codexAccountSwitcher.usageSourceMode": {
+                    "type": "string",
+                    "enum": [
+                        "auto",
+                        "appServerOnly",
+                        "localOnly"
+                    ],
+                    "default": "auto",
+                    "markdownDescription": "Where usage refresh reads from: `auto` prefers Codex app-server and falls back to local session files, `appServerOnly` uses only Codex app-server, and `localOnly` skips app-server and reads only local session files. If `experimentalWebUsageProbeEnabled` is on, the extension tries the experimental web probe before the configured supported sources unless you have chosen `localOnly`."
+                },
+                "codexAccountSwitcher.statusBarSide": {
+                    "type": "string",
+                    "enum": [
+                        "right",
+                        "left"
+                    ],
+                    "default": "right",
+                    "markdownDescription": "Status bar side for the account switcher item."
+                }
+            }
+        },
+        "menus": {
+            "statusBar/item/context": [
+                {
+                    "command": "codexAccountSwitcher.switchAccount",
+                    "when": "true",
+                    "group": "navigation"
+                }
+            ]
+        }
+    },
+    "scripts": {
+        "vscode:prepublish": "npm run compile",
+        "typecheck:webview": "tsc -p tsconfig.webview.json",
+        "build:webview": "esbuild webview-src/usage-dashboard/main.tsx --bundle --format=iife --platform=browser --target=es2021 --jsx=automatic --jsx-import-source=preact --resolve-extensions=.tsx,.ts,.jsx,.js,.css,.json --outfile=out/webview/usage-dashboard/app.js",
+        "compile": "tsc -p ./ && npm run typecheck:webview && npm run build:webview",
+        "watch": "tsc -watch -p ./",
+        "test:unit": "npm run compile && node --test out/test/auth.test.js out/test/core.test.js out/test/usage.test.js out/test/transferCrypto.test.js",
+        "test:integration": "npm run compile && node .vscode-test.mjs",
+        "test:all": "npm run test:unit && npm run test:integration",
+        "test": "npm run test:unit",
+        "package": "npm run compile && npx @vscode/vsce package",
+        "build:shim": "powershell -ExecutionPolicy Bypass -File scripts/build-shim.ps1",
+        "build:shim:all": "powershell -ExecutionPolicy Bypass -File scripts/build-shim.ps1 -All"
+    },
+    "devDependencies": {
+        "@types/mocha": "^10.0.7",
+        "@types/node": "^20.14.10",
+        "@types/vscode": "^1.90.0",
+        "@vscode/test-electron": "^2.4.1",
+        "esbuild": "^0.28.0",
+        "mocha": "^10.7.0",
+        "preact": "^10.29.1",
+        "typescript": "^5.5.4"
+    }
 }
